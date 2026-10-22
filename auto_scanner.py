@@ -7,8 +7,8 @@ from datetime import datetime
 import pytz
 
 # GitHub Secrets se Token aur Chat ID lega
-BOT_TOKEN = os.getenv("8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo")
-CHAT_ID = os.getenv("907465056")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo").strip()
+CHAT_ID = os.getenv("CHAT_ID", "907465056").strip()
 
 TIMEFRAMES = {
     "1h":  {"interval": "1h",  "period": "3mo", "label": "1 Hour"},
@@ -16,7 +16,6 @@ TIMEFRAMES = {
     "1wk": {"interval": "1wk", "period": "2y",  "label": "1 Week"}
 }
 
-# Command Mapping Dictionary
 COMMAND_MAP = {
     "/rsi60_1h": ("1h", "rsi60", "🟢 1 Hour RSI > 60"),
     "/rsi60_1d": ("1d", "rsi60", "🟢 1 Day RSI > 60"),
@@ -64,18 +63,26 @@ def calculate_ema(series, period=50):
     return series.ewm(span=period, adjust=False).mean()
 
 def send_telegram_msg(text):
+    global CHAT_ID
+    if not BOT_TOKEN:
+        raise Exception("❌ BOT_TOKEN khali hai! GitHub Secrets aur schedule.yml check karein.")
+    
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+    r = requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"})
+    print("Telegram Response:", r.status_code, r.text)
+    
+    # Fallback plain text if any HTML tag issue
+    if r.status_code != 200:
+        r2 = requests.post(url, json={"chat_id": CHAT_ID, "text": text})
+        print("Telegram Fallback Response:", r2.status_code, r2.text)
 
 def send_telegram_file(filepath, caption):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     with open(filepath, "rb") as f:
-        requests.post(url, data={"chat_id": CHAT_ID, "caption": caption}, files={"document": f})
+        r = requests.post(url, data={"chat_id": CHAT_ID, "caption": caption}, files={"document": f})
+    print("Telegram File Status:", r.status_code)
 
-# ==========================================================
-# SINGLE SPECIFIC COMMAND SCANNER (RSI60, RSI30, OR EMA50)
-# ==========================================================
-def run_specific_command_scan( tickers, tf_key, mode, title ):
+def run_specific_command_scan(tickers, tf_key, mode, title):
     cfg = TIMEFRAMES[tf_key]
     data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
     results = []
@@ -98,45 +105,39 @@ def run_specific_command_scan( tickers, tf_key, mode, title ):
                 if mode == "rsi60" and curr_rsi > 60:
                     results.append({
                         'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi, 'EMA_50': curr_ema,
-                        'Above_50EMA': 'Yes ✅' if curr_p > curr_ema else 'No',
-                        'Fresh_Breakout': 'YES 🔥' if prev_rsi <= 60 else 'No'
+                        'Above_50EMA': 'Yes' if curr_p > curr_ema else 'No',
+                        'Fresh_Breakout': 'YES' if prev_rsi <= 60 else 'No'
                     })
                 elif mode == "rsi30" and curr_rsi < 30:
                     results.append({
                         'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi, 'EMA_50': curr_ema,
-                        'Above_50EMA': 'Yes ✅' if curr_p > curr_ema else 'No',
-                        'Fresh_Breakdown': 'YES ❄️' if prev_rsi >= 30 else 'No'
+                        'Above_50EMA': 'Yes' if curr_p > curr_ema else 'No',
+                        'Fresh_Breakdown': 'YES' if prev_rsi >= 30 else 'No'
                     })
                 elif mode == "ema50" and curr_p > curr_ema:
-                    pct_diff = round(((curr_p - curr_ema) / curr_ema) * 100, 2)
                     results.append({
-                        'Symbol': sym, 'Price': curr_p, 'EMA_50': curr_ema, 'Diff_%': pct_diff,
-                        'RSI': curr_rsi, 'Fresh_EMA_Cross': 'YES 🚀' if prev_p <= prev_ema else 'No'
+                        'Symbol': sym, 'Price': curr_p, 'EMA_50': curr_ema,
+                        'RSI': curr_rsi, 'Fresh_EMA_Cross': 'YES' if prev_p <= prev_ema else 'No'
                     })
         except Exception:
             continue
 
     if not results:
-        send_telegram_msg(f"❌ *{title}:* Koi stock nahi mila.")
+        send_telegram_msg(f"❌ <b>{title}:</b> Koi stock nahi mila.")
         return
 
     res_df = pd.DataFrame(results)
-    if mode == "rsi60":
-        res_df = res_df.sort_values(by='RSI', ascending=False)
-    elif mode == "rsi30":
-        res_df = res_df.sort_values(by='RSI', ascending=True)
-    else:
-        res_df = res_df.sort_values(by='RSI', ascending=False)
+    res_df = res_df.sort_values(by='RSI', ascending=(mode == "rsi30"))
 
     total = len(res_df)
-    lines = [f"{title}\nTotal Found: *{total} stocks*\n\n*Top 25 Stocks:*"]
+    lines = [f"<b>{title}</b>\nTotal Found: <b>{total} stocks</b>\n\n<b>Top 25 Stocks:</b>"]
     for _, r in res_df.head(25).iterrows():
         if mode == "ema50":
-            tag = "🚀" if "YES" in r['Fresh_EMA_Cross'] else ""
-            lines.append(f"• `{r['Symbol']:<10}` | ₹{r['Price']} (EMA: {r['EMA_50']}) | RSI: {r['RSI']} {tag}")
+            tag = "🚀" if r['Fresh_EMA_Cross'] == "YES" else ""
+            lines.append(f"• <code>{r['Symbol']}</code> | ₹{r['Price']} (EMA:{r['EMA_50']}) | RSI:{r['RSI']} {tag}")
         else:
-            ema_tag = "✅>EMA" if "Yes" in r['Above_50EMA'] else ""
-            lines.append(f"• `{r['Symbol']:<10}` | ₹{r['Price']} | *RSI: {r['RSI']}* {ema_tag}")
+            ema_tag = "✅>EMA" if r['Above_50EMA'] == "Yes" else ""
+            lines.append(f"• <code>{r['Symbol']}</code> | ₹{r['Price']} | <b>RSI:{r['RSI']}</b> {ema_tag}")
 
     send_telegram_msg("\n".join(lines))
     csv_name = f"Scan_{mode}_{tf_key}.csv"
@@ -144,10 +145,8 @@ def run_specific_command_scan( tickers, tf_key, mode, title ):
     send_telegram_file(csv_name, f"📂 Full List ({total} stocks) — {title}")
     os.remove(csv_name)
 
-# ==========================================================
-# CHECK TELEGRAM COMMANDS SENT BY USER
-# ==========================================================
 def process_user_commands(tickers):
+    global CHAT_ID
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
         res = requests.get(url, timeout=10).json()
@@ -161,9 +160,12 @@ def process_user_commands(tickers):
         for item in res["result"]:
             last_update_id = item["update_id"]
             msg = item.get("message", {})
+            # Auto-detect CHAT_ID if missing or wrong
+            if msg.get("chat", {}).get("id"):
+                CHAT_ID = str(msg["chat"]["id"])
             msg_date = msg.get("date", 0)
             text = msg.get("text", "").strip()
-            if (now_ts - msg_date) <= 1200 and text.startswith("/"):
+            if (now_ts - msg_date) <= 1800 and text.startswith("/"):
                 recent_cmds.append(text)
 
         if last_update_id:
@@ -174,11 +176,10 @@ def process_user_commands(tickers):
             parts = cmd.split()
             base_cmd = parts[0].lower().split("@")[0]
 
-            # 1. Single Stock Check (/check RELIANCE)
             if base_cmd == "/check" and len(parts) >= 2:
                 sym = parts[1].upper()
                 ticker = f"{sym}.NS"
-                reply = [f"📊 *{sym} — RSI (14) & 50 EMA Status*"]
+                reply = [f"📊 <b>{sym} — RSI (14) & 50 EMA Status</b>"]
                 price_shown = False
                 for tf_key, cfg in TIMEFRAMES.items():
                     df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False)
@@ -186,21 +187,19 @@ def process_user_commands(tickers):
                         close = (df['Close'][ticker] if isinstance(df.columns, pd.MultiIndex) else df['Close']).dropna()
                         curr_p = round(float(close.iloc[-1]), 2)
                         if not price_shown:
-                            reply.append(f"💰 *Live Price:* ₹{curr_p}\n")
+                            reply.append(f"💰 <b>Live Price:</b> ₹{curr_p}\n")
                             price_shown = True
                         r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
                         e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
                         r_icon = "🟢(>60)" if r_val > 60 else ("🔴(<30)" if r_val < 30 else "🟡")
                         e_icon = "📈 Above 50EMA" if curr_p > e_val else "📉 Below 50EMA"
-                        reply.append(f"⏱ *{cfg['label']}:*\n   • RSI: `{r_val}` {r_icon}\n   • 50 EMA: `₹{e_val}` ({e_icon})")
+                        reply.append(f"⏱ <b>{cfg['label']}:</b>\n   • RSI: <code>{r_val}</code> {r_icon}\n   • 50 EMA: <code>₹{e_val}</code> ({e_icon})")
                 send_telegram_msg("\n".join(reply))
 
-            # 2. Specific Timeframe Commands (/rsi60_1h, /ema50_1d, etc.)
             elif base_cmd in COMMAND_MAP:
                 tf_key, mode, title = COMMAND_MAP[base_cmd]
                 run_specific_command_scan(tickers, tf_key, mode, title)
 
-            # 3. Full Scan Command (/scan)
             elif base_cmd in ["/scan", "/start"]:
                 force_full = True
 
@@ -209,9 +208,6 @@ def process_user_commands(tickers):
         print("Command check error:", e)
         return False
 
-# ==========================================================
-# MAIN SMART SCANNER (09:00 AM FULL + 15-MIN AUTO BREAKOUTS)
-# ==========================================================
 def run_smart_scan():
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
@@ -227,9 +223,8 @@ def run_smart_scan():
         cmd_requested_full
     )
     
-    # MODE 1: 09:00 AM FULL REPORT (RSI > 60, RSI < 30, & PRICE > 50 EMA)
     if is_morning_0900_scan:
-        msg_lines = [f"🌅 *09:00 AM Full RSI & 50 EMA Report ({now_str})*\n_(Timeframes: 1 Hour, 1 Day, 1 Week)_"]
+        msg_lines = [f"🌅 <b>Full RSI & 50 EMA Report ({now_str})</b>\n<i>(Timeframes: 1 Hour, 1 Day, 1 Week)</i>"]
         all_records = []
         
         for tf_key, cfg in TIMEFRAMES.items():
@@ -257,7 +252,7 @@ def run_smart_scan():
                             lt30_cnt += 1
                             
                         if curr_r > 60 and above_ema:
-                            combo_list.append(f"`{sym}`({curr_r})")
+                            combo_list.append(f"<code>{sym}</code>({curr_r})")
                             
                         if curr_r > 60 or curr_r < 30 or above_ema:
                             all_records.append({
@@ -270,23 +265,22 @@ def run_smart_scan():
                     continue
                     
             msg_lines.append(
-                f"\n📌 *{cfg['label']} Summary:*\n"
-                f"   🟢 RSI > 60: *{gt60_cnt}* | 🔴 RSI < 30: *{lt30_cnt}*\n"
-                f"   📈 Price > 50 EMA: *{ema50_cnt} stocks*\n"
-                f"   🔥 *Both (RSI>60 + >50EMA):* " + (", ".join(combo_list[:6]) if combo_list else "None")
+                f"\n📌 <b>{cfg['label']} Summary:</b>\n"
+                f"   🟢 RSI > 60: <b>{gt60_cnt}</b> | 🔴 RSI < 30: <b>{lt30_cnt}</b>\n"
+                f"   📈 Price > 50 EMA: <b>{ema50_cnt} stocks</b>\n"
+                f"   🔥 <b>Top (RSI>60 + >50EMA):</b> " + (", ".join(combo_list[:6]) if combo_list else "None")
             )
                 
         send_telegram_msg("\n".join(msg_lines))
         
         if all_records:
-            csv_file = "Morning_0900_RSI_EMA50_Full.csv"
+            csv_file = "Full_RSI_EMA50_Report.csv"
             pd.DataFrame(all_records).to_csv(csv_file, index=False)
             send_telegram_file(csv_file, f"📂 Full List (RSI>60, RSI<30 & Price>50EMA across 1H, 1D, 1W)")
             os.remove(csv_file)
 
-    # MODE 2: EVERY 15-MIN AUTO BREAKOUT & BREAKDOWN STATUS
     else:
-        alert_lines = [f"⚡ *15-Min Auto Breakout Status ({now_str})*"]
+        alert_lines = [f"⚡ <b>15-Min Auto Breakout Status ({now_str})</b>"]
         fresh_records = []
         
         for tf_key, cfg in TIMEFRAMES.items():
@@ -305,47 +299,40 @@ def run_smart_scan():
                         curr_e, prev_e = round(float(ema50.iloc[-1]), 2), round(float(ema50.iloc[-2]), 2)
                         sym = t.replace('.NS', '')
                         
-                        # 1. New RSI > 60 Breakout
                         if curr_r > 60 and prev_r <= 60:
                             ema_tag = "✅>50EMA" if curr_p > curr_e else ""
-                            new_rsi_bo.append(f"`{sym}` (₹{curr_p} | RSI:{curr_r} {ema_tag})")
+                            new_rsi_bo.append(f"<code>{sym}</code> (₹{curr_p} | RSI:{curr_r} {ema_tag})")
                             fresh_records.append({
-                                'Timeframe': cfg['label'], 'Signal': 'NEW RSI > 60 🔥',
-                                'Symbol': sym, 'Price': curr_p, 'RSI': curr_r, 'EMA_50': curr_e,
-                                'Above_50EMA': 'YES' if curr_p > curr_e else 'No'
+                                'Timeframe': cfg['label'], 'Signal': 'NEW RSI > 60',
+                                'Symbol': sym, 'Price': curr_p, 'RSI': curr_r, 'EMA_50': curr_e
                             })
-                        # 2. New RSI < 30 Breakdown
                         elif curr_r < 30 and prev_r >= 30:
-                            new_rsi_bd.append(f"`{sym}` (₹{curr_p} | RSI:{curr_r})")
+                            new_rsi_bd.append(f"<code>{sym}</code> (₹{curr_p} | RSI:{curr_r})")
                             fresh_records.append({
-                                'Timeframe': cfg['label'], 'Signal': 'NEW RSI < 30 ❄️',
-                                'Symbol': sym, 'Price': curr_p, 'RSI': curr_r, 'EMA_50': curr_e,
-                                'Above_50EMA': 'YES' if curr_p > curr_e else 'No'
+                                'Timeframe': cfg['label'], 'Signal': 'NEW RSI < 30',
+                                'Symbol': sym, 'Price': curr_p, 'RSI': curr_r, 'EMA_50': curr_e
                             })
-                        # 3. New Price Crossed Above 50 EMA
                         if curr_p > curr_e and prev_p <= prev_e:
-                            new_ema_bo.append(f"`{sym}` (₹{curr_p} > EMA:{curr_e} | RSI:{curr_r})")
+                            new_ema_bo.append(f"<code>{sym}</code> (₹{curr_p} > EMA:{curr_e})")
                             fresh_records.append({
-                                'Timeframe': cfg['label'], 'Signal': 'NEW PRICE > 50 EMA 🚀',
-                                'Symbol': sym, 'Price': curr_p, 'RSI': curr_r, 'EMA_50': curr_e,
-                                'Above_50EMA': 'YES'
+                                'Timeframe': cfg['label'], 'Signal': 'NEW PRICE > 50 EMA',
+                                'Symbol': sym, 'Price': curr_p, 'RSI': curr_r, 'EMA_50': curr_e
                             })
                 except Exception:
                     continue
             
-            alert_lines.append(f"\n⏱ *{cfg['label']} Timeframe:*")
-            alert_lines.append(f"🔥 *New RSI > 60 [{len(new_rsi_bo)}]:* " + (", ".join(new_rsi_bo[:8]) if new_rsi_bo else "None"))
-            alert_lines.append(f"❄️ *New RSI < 30 [{len(new_rsi_bd)}]:* " + (", ".join(new_rsi_bd[:8]) if new_rsi_bd else "None"))
-            alert_lines.append(f"🚀 *New Price > 50EMA [{len(new_ema_bo)}]:* " + (", ".join(new_ema_bo[:8]) if new_ema_bo else "None"))
+            alert_lines.append(f"\n⏱ <b>{cfg['label']} Timeframe:</b>")
+            alert_lines.append(f"🔥 <b>New RSI > 60 [{len(new_rsi_bo)}]:</b> " + (", ".join(new_rsi_bo[:8]) if new_rsi_bo else "None"))
+            alert_lines.append(f"❄️ <b>New RSI < 30 [{len(new_rsi_bd)}]:</b> " + (", ".join(new_rsi_bd[:8]) if new_rsi_bd else "None"))
+            alert_lines.append(f"🚀 <b>New > 50EMA [{len(new_ema_bo)}]:</b> " + (", ".join(new_ema_bo[:8]) if new_ema_bo else "None"))
         
         send_telegram_msg("\n".join(alert_lines))
         
         if fresh_records:
             csv_file = "New_Breakouts_RSI_EMA50.csv"
             pd.DataFrame(fresh_records).to_csv(csv_file, index=False)
-            send_telegram_file(csv_file, f"⚡ {len(fresh_records)} New Signals (RSI & 50 EMA) at {now_str}")
+            send_telegram_file(csv_file, f"⚡ {len(fresh_records)} New Signals at {now_str}")
             os.remove(csv_file)
 
 if __name__ == "__main__":
     run_smart_scan()
-()
