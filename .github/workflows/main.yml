@@ -1,1 +1,36 @@
 
+name: Smart Nifty 500 RSI Alert
+
+on:
+  schedule:
+    # 1. Subah 09:15 AM IST (03:45 UTC) -> Sabhi stocks ki Full Morning Report
+    - cron: '45 3 * * 1-5'
+    # 2. Subah 09:30 AM se 03:30 PM IST (04:00 to 10:00 UTC) har 15 min -> Sirf New Breakouts/Breakdowns
+    - cron: '*/15 4-10 * * 1-5'
+
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: 'Manual Test Mode (Full Report test karne ke liye true likhein)'
+        required: false
+        default: 'true'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Libraries
+        run: pip install yfinance pandas numpy requests pytz
+
+      - name: Run Smart Scanner
+        env:
+          FORCE_FULL_SCAN: ${{ github.event.inputs.scan_type }}
+        run: python auto_scanner.py
