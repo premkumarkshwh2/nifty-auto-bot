@@ -7,8 +7,8 @@ from datetime import datetime
 import pytz
 
 # GitHub Secrets se Token aur Chat ID lega
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+BOT_TOKEN = os.getenv("8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo")
+CHAT_ID = os.getenv("907465056")
 
 TIMEFRAMES = {
     "1h":  {"interval": "1h",  "period": "3mo", "label": "1 Hour"},
