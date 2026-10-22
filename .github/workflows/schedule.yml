@@ -2,15 +2,17 @@ name: Smart Nifty 500 RSI Alert
 
 on:
   schedule:
-    # 1. Subah 09:15 AM IST (03:45 UTC) -> Sabhi stocks ki Full Morning Report
+    # 1. Subah 09:00 AM IST (03:30 UTC) -> Sabhi stocks ki Full Morning Report
+    - cron: '30 3 * * 1-5'
+    # 2. Subah 09:15 AM IST (03:45 UTC) -> First Live Market Breakout/Breakdown Check
     - cron: '45 3 * * 1-5'
-    # 2. Subah 09:30 AM se 03:30 PM IST (04:00 to 10:00 UTC) har 15 min -> Sirf New Breakouts/Breakdowns
+    # 3. Subah 09:30 AM se 03:30 PM IST (04:00 to 10:00 UTC) har 15 min -> Auto Update
     - cron: '*/15 4-10 * * 1-5'
 
   workflow_dispatch:
     inputs:
       scan_type:
-        description: 'Manual Test Mode (Full Report test karne ke liye true likhein)'
+        description: 'Manual Test Mode (Full Report ke liye true, Sirf Breakout test ke liye false likhein)'
         required: false
         default: 'true'
 
