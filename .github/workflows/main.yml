@@ -2,19 +2,19 @@ name: Smart Nifty 500 RSI Alert
 
 on:
   schedule:
-    # 1. Subah 09:00 AM IST (03:30 UTC) -> Sabhi stocks ki Full Morning Report
+    # 1. Subah 09:00 AM IST (03:30 UTC) -> Full Morning Report
     - cron: '30 3 * * 1-5'
-    # 2. Subah 09:15 AM IST (03:45 UTC) -> First Live Market Breakout/Breakdown Check
-    - cron: '45 3 * * 1-5'
-    # 3. Subah 09:30 AM se 03:30 PM IST (04:00 to 10:00 UTC) har 15 min -> Auto Update
-    - cron: '*/15 4-10 * * 1-5'
+    # 2. Subah 09:15 AM se 09:55 AM IST (03:45 to 03:55 UTC) -> Har 5 min mein
+    - cron: '45,50,55 3 * * 1-5'
+    # 3. Subah 10:00 AM se 03:30 PM IST (04:00 to 10:00 UTC) -> Har 5 min mein Auto Update
+    - cron: '*/5 4-10 * * 1-5'
 
   workflow_dispatch:
     inputs:
       scan_type:
-        description: 'Manual Test Mode (Full Report ke liye true, Sirf Breakout test ke liye false likhein)'
+        description: 'Manual Test Mode (Full Report ke liye true, Breakout test ke liye false)'
         required: false
-        default: 'true'
+        default: 'false'
 
 jobs:
   scan:
@@ -34,5 +34,7 @@ jobs:
       - name: Run Smart Scanner
         env:
           FORCE_FULL_SCAN: ${{ github.event.inputs.scan_type }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python auto_scanner.py
         
