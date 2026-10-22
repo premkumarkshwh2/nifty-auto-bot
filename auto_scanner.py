@@ -8,26 +8,27 @@ from datetime import datetime
 import pytz
 
 # 👇 APNA BOT TOKEN AUR CHAT ID YAHAN DALEIN 👇
-BOT_TOKEN = "8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo"
-CHAT_ID = "907465056"
+BOT_TOKEN = "APNA_BOT_TOKEN_YAHAN_DALEIN"
+CHAT_ID = "APNI_CHAT_ID_YAHAN_DALEIN"
 
+# Timeframes: 1 Hour, 1 Day, 1 Week
 TIMEFRAMES = {
-    "15m": {"interval": "15m", "period": "5d",  "label": "15 Min"},
     "1h":  {"interval": "1h",  "period": "1mo", "label": "1 Hour"},
     "1d":  {"interval": "1d",  "period": "3mo", "label": "1 Day"},
     "1wk": {"interval": "1wk", "period": "1y",  "label": "1 Week"}
 }
 
 def get_nifty500_tickers():
-    """NSE Cloud Block Bypass + Fallback Method"""
+    """NSE + GitHub Mirror Fallback (100% Cloud Safe)"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
+        "Accept": "text/csv,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.nseindia.com/"
     }
     urls = [
         "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
-        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
+        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv"
     ]
     for url in urls:
         try:
@@ -68,15 +69,20 @@ def run_smart_scan():
     now = datetime.now(ist)
     now_str = now.strftime('%d-%b %I:%M %p')
     
-    is_morning_full_scan = (now.hour == 9 and now.minute < 25) or os.getenv("FORCE_FULL_SCAN") == "true"
+    # 09:00 AM Morning Full Scan Window (between 08:45 AM and 09:10 AM IST) OR Manual Test Run
+    is_morning_0900_scan = (
+        (now.hour == 8 and now.minute >= 45) or 
+        (now.hour == 9 and now.minute <= 10) or 
+        os.getenv("FORCE_FULL_SCAN") == "true"
+    )
     
     tickers = get_nifty500_tickers()
     
     # ==========================================================
-    # MODE 1: SUBAH 09:15 AM (OR MANUAL TEST) -> FULL REPORT
+    # MODE 1: SUBAH 09:00 AM -> SABHI STOCKS KI FULL REPORT
     # ==========================================================
-    if is_morning_full_scan:
-        msg_lines = [f"🌅 *09:15 AM Morning Full RSI Report ({now_str})*\n_(Sabhi Timeframes ke RSI > 60 & RSI < 30 Stocks)_"]
+    if is_morning_0900_scan:
+        msg_lines = [f"🌅 *09:00 AM Morning Full RSI Report ({now_str})*\n_(Timeframes: 1 Hour, 1 Day, 1 Week)_"]
         all_records = []
         
         for tf_key, cfg in TIMEFRAMES.items():
@@ -120,17 +126,16 @@ def run_smart_scan():
         send_telegram_msg("\n".join(msg_lines))
         
         if all_records:
-            csv_file = "Morning_0915_Full_RSI_List.csv"
+            csv_file = "Morning_0900_Full_RSI_List.csv"
             pd.DataFrame(all_records).to_csv(csv_file, index=False)
-            send_telegram_file(csv_file, f"📂 Full RSI List ({len(all_records)} stocks across 15m, 1H, 1D, 1W)")
+            send_telegram_file(csv_file, f"📂 09:00 AM Full RSI List ({len(all_records)} stocks across 1H, 1D, 1W)")
             os.remove(csv_file)
 
     # ==========================================================
-    # MODE 2: 09:30 AM SE 03:30 PM -> SIRF NEW BREAKOUT & BREAKDOWN
+    # MODE 2: HAR 15 MIN AUTO UPDATE -> NEW BREAKOUT & BREAKDOWN STATUS
     # ==========================================================
     else:
-        alert_lines = [f"⚡ *New RSI Breakout / Breakdown Alert ({now_str})*"]
-        new_signals_found = False
+        alert_lines = [f"⚡ *15-Min Auto RSI Status ({now_str})*"]
         fresh_records = []
         
         for tf_key, cfg in TIMEFRAMES.items():
@@ -147,12 +152,14 @@ def run_smart_scan():
                         price = round(float(close.iloc[-1]), 2)
                         sym = t.replace('.NS', '')
                         
+                        # Naya Breakout (Crossed Above 60)
                         if curr > 60 and prev <= 60:
                             new_breakouts.append(f"`{sym}` (₹{price} | {prev}➡️*{curr}*)")
                             fresh_records.append({
                                 'Timeframe': cfg['label'], 'Signal': 'NEW BREAKOUT (>60) 🔥',
                                 'Symbol': sym, 'Price': price, 'Prev_RSI': prev, 'Current_RSI': curr
                             })
+                        # Naya Breakdown (Crossed Below 30)
                         elif curr < 30 and prev >= 30:
                             new_breakdowns.append(f"`{sym}` (₹{price} | {prev}➡️*{curr}*)")
                             fresh_records.append({
@@ -162,23 +169,26 @@ def run_smart_scan():
                 except Exception:
                     continue
             
-            if new_breakouts or new_breakdowns:
-                new_signals_found = True
-                alert_lines.append(f"\n⏱ *{cfg['label']} Timeframe:*")
-                if new_breakouts:
-                    alert_lines.append("🔥 *New > 60:*\n• " + "\n• ".join(new_breakouts[:12]))
-                if new_breakdowns:
-                    alert_lines.append("❄️ *New < 30:*\n• " + "\n• ".join(new_breakdowns[:12]))
+            alert_lines.append(f"\n⏱ *{cfg['label']} Timeframe:*")
+            if new_breakouts:
+                alert_lines.append(f"🔥 *New Breakout (>60) [{len(new_breakouts)}]:*\n• " + "\n• ".join(new_breakouts[:10]))
+            else:
+                alert_lines.append("🔥 *New Breakout (>60):* None")
+                
+            if new_breakdowns:
+                alert_lines.append(f"❄️ *New Breakdown (<30) [{len(new_breakdowns)}]:*\n• " + "\n• ".join(new_breakdowns[:10]))
+            else:
+                alert_lines.append("❄️ *New Breakdown (<30):* None")
         
-        if new_signals_found:
-            send_telegram_msg("\n".join(alert_lines))
-            if len(fresh_records) > 10:
-                csv_file = "New_RSI_Signals.csv"
-                pd.DataFrame(fresh_records).to_csv(csv_file, index=False)
-                send_telegram_file(csv_file, f"⚡ Total {len(fresh_records)} New Signals at {now_str}")
-                os.remove(csv_file)
-        else:
-            print(f"[{now_str}] No new signals.")
+        # Har 15 min mein status bhejega
+        send_telegram_msg("\n".join(alert_lines))
+        
+        # Agar naye breakout/breakdown mile hain toh unki CSV file bhi bhej dega
+        if fresh_records:
+            csv_file = "New_RSI_Breakout_Breakdown.csv"
+            pd.DataFrame(fresh_records).to_csv(csv_file, index=False)
+            send_telegram_file(csv_file, f"⚡ {len(fresh_records)} New Breakouts/Breakdowns at {now_str}")
+            os.remove(csv_file)
 
 if __name__ == "__main__":
     run_smart_scan()
