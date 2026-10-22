@@ -1,12 +1,14 @@
+
 import requests
 import pandas as pd
 import yfinance as yf
 import os
+import io
 from datetime import datetime
 import pytz
 
 # 👇 APNA BOT TOKEN AUR CHAT ID YAHAN DALEIN 👇
-BOT_TOKEN =''8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo"
+BOT_TOKEN = "8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo"
 CHAT_ID = "907465056"
 
 TIMEFRAMES = {
@@ -15,6 +17,31 @@ TIMEFRAMES = {
     "1d":  {"interval": "1d",  "period": "3mo", "label": "1 Day"},
     "1wk": {"interval": "1wk", "period": "1y",  "label": "1 Week"}
 }
+
+def get_nifty500_tickers():
+    """NSE Cloud Block Bypass + Fallback Method"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
+    }
+    urls = [
+        "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
+    ]
+    for url in urls:
+        try:
+            res = requests.get(url, headers=headers, timeout=15)
+            if res.status_code == 200 and "Symbol" in res.text:
+                df = pd.read_csv(io.StringIO(res.text))
+                tickers = [f"{str(s).strip()}.NS" for s in df['Symbol'].dropna().tolist() if "NIFTY" not in str(s)]
+                if len(tickers) > 100:
+                    print(f"Loaded {len(tickers)} tickers from {url}")
+                    return tickers
+        except Exception as e:
+            print(f"URL failed ({url}): {e}")
+            
+    raise Exception("Nifty 500 list fetch nahi ho payi.")
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -27,33 +54,33 @@ def calculate_rsi(series, period=14):
 
 def send_telegram_msg(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+    r = requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+    print("Telegram Msg Status:", r.status_code, r.text)
 
 def send_telegram_file(filepath, caption):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     with open(filepath, "rb") as f:
-        requests.post(url, data={"chat_id": CHAT_ID, "caption": caption}, files={"document": f})
+        r = requests.post(url, data={"chat_id": CHAT_ID, "caption": caption}, files={"document": f})
+    print("Telegram File Status:", r.status_code)
 
 def run_smart_scan():
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
     now_str = now.strftime('%d-%b %I:%M %p')
     
-    # Check if this is the 9:15 AM Morning Run (9:00 AM to 9:24 AM window) or Manual Test Run
     is_morning_full_scan = (now.hour == 9 and now.minute < 25) or os.getenv("FORCE_FULL_SCAN") == "true"
     
-    url = "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv"
-    df = pd.read_csv(url, storage_options={'User-Agent': 'Mozilla/5.0'})
-    tickers = [f"{s}.NS" for s in df['Symbol'].tolist()]
+    tickers = get_nifty500_tickers()
     
     # ==========================================================
-    # MODE 1: SUBAH 09:15 AM -> SABHI STOCKS KI FULL REPORT
+    # MODE 1: SUBAH 09:15 AM (OR MANUAL TEST) -> FULL REPORT
     # ==========================================================
     if is_morning_full_scan:
         msg_lines = [f"🌅 *09:15 AM Morning Full RSI Report ({now_str})*\n_(Sabhi Timeframes ke RSI > 60 & RSI < 30 Stocks)_"]
         all_records = []
         
         for tf_key, cfg in TIMEFRAMES.items():
+            print(f"Scanning {cfg['label']}...")
             data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
             gt60_list, lt30_list = [], []
             
@@ -84,18 +111,18 @@ def run_smart_scan():
                 except Exception:
                     continue
                     
-            msg_lines.append(f"\n📌 *{cfg['label']}:* 🟢 `>60`: *{len(gt60_list)} stocks* | 🔴 `<30`: *{len(lt30_list)} stocks*")
+            msg_lines.append(f"\n📌 *{cfg['label']}:* 🟢 `>60`: *{len(gt60_list)}* | 🔴 `<30`: *{len(lt30_list)}*")
             if gt60_list:
-                msg_lines.append("   Top >60: " + ", ".join(gt60_list[:8]))
+                msg_lines.append("   Top >60: " + ", ".join(gt60_list[:6]))
             if lt30_list:
-                msg_lines.append("   Top <30: " + ", ".join(lt30_list[:8]))
+                msg_lines.append("   Top <30: " + ", ".join(lt30_list[:6]))
                 
         send_telegram_msg("\n".join(msg_lines))
         
         if all_records:
             csv_file = "Morning_0915_Full_RSI_List.csv"
             pd.DataFrame(all_records).to_csv(csv_file, index=False)
-            send_telegram_file(csv_file, f"📂 09:15 AM Full List ({len(all_records)} entries across 15m, 1H, 1D, 1W)")
+            send_telegram_file(csv_file, f"📂 Full RSI List ({len(all_records)} stocks across 15m, 1H, 1D, 1W)")
             os.remove(csv_file)
 
     # ==========================================================
@@ -108,8 +135,7 @@ def run_smart_scan():
         
         for tf_key, cfg in TIMEFRAMES.items():
             data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
-            new_breakouts = []   # Prev <= 60 and Current > 60
-            new_breakdowns = []  # Prev >= 30 and Current < 30
+            new_breakouts, new_breakdowns = [], []
             
             for t in tickers:
                 try:
@@ -121,17 +147,14 @@ def run_smart_scan():
                         price = round(float(close.iloc[-1]), 2)
                         sym = t.replace('.NS', '')
                         
-                        # SIRF NAYA BREAKOUT (Crossed Above 60)
                         if curr > 60 and prev <= 60:
-                            new_breakouts.append(f"`{sym}` (₹{price} | RSI: {prev}➡️*{curr}*)")
+                            new_breakouts.append(f"`{sym}` (₹{price} | {prev}➡️*{curr}*)")
                             fresh_records.append({
                                 'Timeframe': cfg['label'], 'Signal': 'NEW BREAKOUT (>60) 🔥',
                                 'Symbol': sym, 'Price': price, 'Prev_RSI': prev, 'Current_RSI': curr
                             })
-                            
-                        # SIRF NAYA BREAKDOWN (Crossed Below 30)
                         elif curr < 30 and prev >= 30:
-                            new_breakdowns.append(f"`{sym}` (₹{price} | RSI: {prev}➡️*{curr}*)")
+                            new_breakdowns.append(f"`{sym}` (₹{price} | {prev}➡️*{curr}*)")
                             fresh_records.append({
                                 'Timeframe': cfg['label'], 'Signal': 'NEW BREAKDOWN (<30) ❄️',
                                 'Symbol': sym, 'Price': price, 'Prev_RSI': prev, 'Current_RSI': curr
@@ -143,20 +166,19 @@ def run_smart_scan():
                 new_signals_found = True
                 alert_lines.append(f"\n⏱ *{cfg['label']} Timeframe:*")
                 if new_breakouts:
-                    alert_lines.append("🔥 *New RSI > 60 Breakout:*\n• " + "\n• ".join(new_breakouts[:15]))
+                    alert_lines.append("🔥 *New > 60:*\n• " + "\n• ".join(new_breakouts[:12]))
                 if new_breakdowns:
-                    alert_lines.append("❄️ *New RSI < 30 Breakdown:*\n• " + "\n• ".join(new_breakdowns[:15]))
+                    alert_lines.append("❄️ *New < 30:*\n• " + "\n• ".join(new_breakdowns[:12]))
         
-        # Message tabhi bhejega jab koi NAYA Breakout ya Breakdown milega
         if new_signals_found:
             send_telegram_msg("\n".join(alert_lines))
             if len(fresh_records) > 10:
                 csv_file = "New_RSI_Signals.csv"
                 pd.DataFrame(fresh_records).to_csv(csv_file, index=False)
-                send_telegram_file(csv_file, f"⚡ Total {len(fresh_records)} New Breakouts/Breakdowns at {now_str}")
+                send_telegram_file(csv_file, f"⚡ Total {len(fresh_records)} New Signals at {now_str}")
                 os.remove(csv_file)
         else:
-            print(f"[{now_str}] Koi naya RSI breakout/breakdown nahi mila. No message sent.")
+            print(f"[{now_str}] No new signals.")
 
 if __name__ == "__main__":
     run_smart_scan()
