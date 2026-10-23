@@ -126,10 +126,17 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
                 if len(close) > 50:
                     rsi_s = calculate_rsi(close, 14)
                     ema_s = calculate_ema(close, 50)
+                    
+                    if rsi_s.empty or ema_s.empty:
+                        continue
+                        
                     curr_p = round(float(close.iloc[-1]), 2)
                     curr_rsi = round(float(rsi_s.iloc[-1]), 1)
                     curr_ema = round(float(ema_s.iloc[-1]), 2)
                     sym = t.replace('.NS', '')
+
+                    if pd.isna(curr_rsi) or pd.isna(curr_ema):
+                        continue
 
                     if mode == "rsi60" and curr_rsi > 60:
                         results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi})
@@ -141,7 +148,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
                 continue
 
         if not results:
-            send_telegram_msg(f"❌ <b>{title}:</b> Koi stock match nahi hua.")
+            send_telegram_msg(f"❌ <b>{title}:</b> Is samay criteria match karne wala koi stock nahi mila.")
             return
 
         is_rsi = "rsi" in mode
@@ -189,14 +196,23 @@ def process_user_commands(tickers):
                     ticker = f"{sym}.NS"
                     reply = [f"📊 <b>{sym} — Status</b>\n<code>TF   | Price  | RSI  | EMA50</code>\n<code>-------------------------</code>"]
                     for tf_key, cfg in TIMEFRAMES.items():
-                        df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False, auto_adjust=False)
-                        if not df.empty and len(df) > 50:
-                            close = (df['Close'][ticker] if isinstance(df.columns, pd.MultiIndex) else df['Close']).dropna()
-                            curr_p = round(float(close.iloc[-1]), 2)
-                            r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
-                            e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
-                            reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
-                    send_telegram_msg("\n".join(reply))
+                        try:
+                            df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False, auto_adjust=False)
+                            if not df.empty:
+                                close = (df['Close'][ticker] if isinstance(df.columns, pd.MultiIndex) else df['Close']).dropna()
+                                if len(close) > 50:
+                                    curr_p = round(float(close.iloc[-1]), 2)
+                                    r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
+                                    e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
+                                    reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
+                        except Exception as tf_err:
+                            print(f"Error checking {tf_key} for {sym}: {tf_err}")
+                            continue
+                    
+                    if len(reply) > 1:
+                        send_telegram_msg("\n".join(reply))
+                    else:
+                        send_telegram_msg(f"❌ <b>{sym}:</b> Data fetch nahi ho paya ya symbol galat hai.")
 
                 elif base_cmd in COMMAND_MAP:
                     tf_key, mode, title = COMMAND_MAP[base_cmd]
@@ -263,6 +279,9 @@ def run_smart_scan():
                     curr_e = round(float(ema50.iloc[-1]), 2)
                     sym = t.replace('.NS', '')
 
+                    if pd.isna(curr_r) or pd.isna(curr_e):
+                        continue
+
                     if is_morning_0900_scan:
                         if curr_r > 60:
                             bo_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
@@ -320,3 +339,4 @@ if __name__ == "__main__":
             print("Error:", e)
         print("Waiting 5 minutes for next scan...")
         time.sleep(300)
+            
