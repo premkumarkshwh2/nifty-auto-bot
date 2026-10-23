@@ -1,14 +1,23 @@
+!pip install yfinance pandas requests pytz
+
 import requests
 import pandas as pd
 import yfinance as yf
 import os
 import io
-from datetime import datetime
+from datetime import datetime, date
+import time
 import pytz
+import warnings
+import logging
+import threading
 
-# GitHub Secrets se Token aur Chat ID lega
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo").strip()
-CHAT_ID = os.getenv("CHAT_ID", "907465056").strip()
+warnings.simplefilter(action='ignore', category=FutureWarning)
+logger = logging.getLogger('yfinance')
+logger.setLevel(logging.CRITICAL)
+
+BOT_TOKEN = "8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo"
+CHAT_ID = "907465056"
 
 TIMEFRAMES = {
     "1h":  {"interval": "1h",  "period": "3mo", "label": "1 Hour"},
@@ -28,24 +37,47 @@ COMMAND_MAP = {
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
 }
 
+# Global cache for tickers, last fetch date, and higher timeframe timer
+CACHED_TICKERS = []
+LAST_FETCH_DATE = None
+LAST_HIGHER_TF_SCAN = 0
+
 def get_nifty500_tickers():
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/"}
+    global CACHED_TICKERS, LAST_FETCH_DATE
+    today = date.today()
+    if CACHED_TICKERS and LAST_FETCH_DATE == today:
+        return CACHED_TICKERS
+
     urls = [
+        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv",
+        "https://raw.githubusercontent.com/anuj-singh-01/nse-stocks-list/main/ind_nifty500list.csv",
         "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
-        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
-        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv"
+        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
     ]
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/"
+    }
+
     for url in urls:
         try:
             res = requests.get(url, headers=headers, timeout=15)
-            if res.status_code == 200 and "Symbol" in res.text:
+            if res.status_code == 200 and ("Symbol" in res.text or "symbol" in res.text):
                 df = pd.read_csv(io.StringIO(res.text))
-                tickers = [f"{str(s).strip()}.NS" for s in df['Symbol'].dropna().tolist() if "NIFTY" not in str(s)]
+                col_name = 'Symbol' if 'Symbol' in df.columns else ('SYMBOL' if 'SYMBOL' in df.columns else df.columns[0])
+                tickers = [f"{str(s).strip()}.NS" for s in df[col_name].dropna().tolist() if "NIFTY" not in str(s)]
                 if len(tickers) > 100:
+                    CACHED_TICKERS = tickers
+                    LAST_FETCH_DATE = today
                     return tickers
         except Exception:
             continue
-    raise Exception("Nifty 500 list fetch nahi ho payi.")
+            
+    if CACHED_TICKERS:
+        return CACHED_TICKERS
+    raise Exception("Nifty 500 list kisi bhi source se fetch nahi ho payi.")
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -62,73 +94,74 @@ def calculate_ema(series, period=50):
 def send_telegram_msg(text):
     global CHAT_ID
     if not BOT_TOKEN or not CHAT_ID:
-        print("BOT_TOKEN or CHAT_ID missing!")
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    
+
     lines = text.split("\n")
     chunk = []
     curr_len = 0
     for line in lines:
         if curr_len + len(line) + 1 > 3800:
             msg_part = "\n".join(chunk)
-            r = requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"})
-            if r.status_code != 200:
-                requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part})
+            requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"})
             chunk = [line]
             curr_len = len(line)
         else:
             chunk.append(line)
             curr_len += len(line) + 1
-            
+
     if chunk:
         msg_part = "\n".join(chunk)
-        r = requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"})
-        if r.status_code != 200:
-            requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part})
+        requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"})
 
 def run_specific_command_scan(tickers, tf_key, mode, title):
-    cfg = TIMEFRAMES[tf_key]
-    data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
-    results = []
+    try:
+        send_telegram_msg(f"⏳ <b>{title}</b> ke liye scan shuru ho gaya hai, kripya 10-15 seconds intezaar karein...")
+        cfg = TIMEFRAMES[tf_key]
+        results = []
 
-    for t in tickers:
-        try:
-            close = data[t]['Close'].dropna()
-            if len(close) > 50:
-                rsi_s = calculate_rsi(close, 14)
-                ema_s = calculate_ema(close, 50)
-                curr_p = round(float(close.iloc[-1]), 2)
-                prev_p = round(float(close.iloc[-2]), 2)
-                curr_rsi = round(float(rsi_s.iloc[-1]), 1)
-                prev_rsi = round(float(rsi_s.iloc[-2]), 1)
-                curr_ema = round(float(ema_s.iloc[-1]), 2)
-                sym = t.replace('.NS', '')
+        data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True, auto_adjust=False)
 
-                if mode == "rsi60" and curr_rsi > 60:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi, 'EMA_50': curr_ema, 'Fresh': prev_rsi <= 60})
-                elif mode == "rsi30" and curr_rsi < 30:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi, 'EMA_50': curr_ema, 'Fresh': prev_rsi >= 30})
-                elif mode == "ema50" and curr_p > curr_ema:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'EMA_50': curr_ema, 'RSI': curr_rsi, 'Fresh': prev_p <= prev_ema})
-        except Exception:
-            continue
+        for t in tickers:
+            try:
+                close = data[t]['Close'].dropna() if isinstance(data.columns, pd.MultiIndex) else data['Close'].dropna()
+                if len(close) > 50:
+                    rsi_s = calculate_rsi(close, 14)
+                    ema_s = calculate_ema(close, 50)
+                    curr_p = round(float(close.iloc[-1]), 2)
+                    curr_rsi = round(float(rsi_s.iloc[-1]), 1)
+                    curr_ema = round(float(ema_s.iloc[-1]), 2)
+                    sym = t.replace('.NS', '')
 
-    if not results:
-        send_telegram_msg(f"❌ <b>{title}:</b> Koi stock nahi mila.")
-        return
+                    if mode == "rsi60" and curr_rsi > 60:
+                        results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi})
+                    elif mode == "rsi30" and curr_rsi < 30:
+                        results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi})
+                    elif mode == "ema50" and curr_p > curr_ema:
+                        results.append({'Symbol': sym, 'Price': curr_p, 'EMA50': curr_ema})
+            except Exception:
+                continue
 
-    res_df = pd.DataFrame(results).sort_values(by='RSI', ascending=(mode == "rsi30"))
-    total = len(res_df)
-    
-    # Simple Table Header like CSV
-    lines = [f"<b>{title}</b> (Total: {total})\n<code>Symbol     | Price    | RSI  | EMA50</code>\n<code>----------------------------------</code>"]
-    
-    for _, r in res_df.head(40).iterrows():
-        fresh_tag = "🔥" if r['Fresh'] else ""
-        lines.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | {r['RSI']:<4} | {r['EMA_50']}</code> {fresh_tag}")
+        if not results:
+            send_telegram_msg(f"❌ <b>{title}:</b> Koi stock match nahi hua.")
+            return
 
-    send_telegram_msg("\n".join(lines))
+        is_rsi = "rsi" in mode
+
+        if is_rsi:
+            res_df = pd.DataFrame(results).sort_values(by='RSI', ascending=(mode == "rsi30"))
+            lines = [f"<b>{title}</b>\n<code>Symbol     | Price    | RSI</code>\n<code>------------------------------</code>"]
+            for _, r in res_df.head(30).iterrows():
+                lines.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | {r['RSI']:<5}</code>")
+        else:
+            res_df = pd.DataFrame(results).sort_values(by='Price', ascending=False)
+            lines = [f"<b>{title}</b>\n<code>Symbol     | Price    | 50 EMA</code>\n<code>------------------------------</code>"]
+            for _, r in res_df.head(30).iterrows():
+                lines.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | ₹{r['EMA50']:<6}</code>")
+
+        send_telegram_msg("\n".join(lines))
+    except Exception as e:
+        send_telegram_msg(f"⚠️ Command error: {str(e)}")
 
 def process_user_commands(tickers):
     global CHAT_ID
@@ -136,10 +169,9 @@ def process_user_commands(tickers):
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
         res = requests.get(url, timeout=10).json()
         if not res.get("ok") or not res.get("result"):
-            return False
+            return
 
         now_ts = datetime.now().timestamp()
-        recent_cmds = []
         last_update_id = None
 
         for item in res["result"]:
@@ -149,124 +181,144 @@ def process_user_commands(tickers):
                 CHAT_ID = str(msg["chat"]["id"])
             msg_date = msg.get("date", 0)
             text = msg.get("text", "").strip()
-            if (now_ts - msg_date) <= 600 and text.startswith("/"):
-                recent_cmds.append(text)
+
+            if (now_ts - msg_date) <= 900 and text.startswith("/"):
+                parts = text.split()
+                base_cmd = parts[0].lower().split("@")[0]
+
+                if base_cmd == "/check" and len(parts) >= 2:
+                    sym = parts[1].upper()
+                    ticker = f"{sym}.NS"
+                    reply = [f"📊 <b>{sym} — Status</b>\n<code>TF   | Price  | RSI  | EMA50</code>\n<code>-------------------------</code>"]
+                    for tf_key, cfg in TIMEFRAMES.items():
+                        df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False, auto_adjust=False)
+                        if not df.empty and len(df) > 50:
+                            close = (df['Close'][ticker] if isinstance(df.columns, pd.MultiIndex) else df['Close']).dropna()
+                            curr_p = round(float(close.iloc[-1]), 2)
+                            r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
+                            e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
+                            reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
+                    send_telegram_msg("\n".join(reply))
+
+                elif base_cmd in COMMAND_MAP:
+                    tf_key, mode, title = COMMAND_MAP[base_cmd]
+                    run_specific_command_scan(tickers, tf_key, mode, title)
 
         if last_update_id:
             requests.get(f"{url}?offset={last_update_id + 1}", timeout=5)
 
-        force_full = False
-        for cmd in recent_cmds:
-            parts = cmd.split()
-            base_cmd = parts[0].lower().split("@")[0]
-
-            if base_cmd == "/check" and len(parts) >= 2:
-                sym = parts[1].upper()
-                ticker = f"{sym}.NS"
-                reply = [f"📊 <b>{sym} — Status</b>\n<code>TF   | Price  | RSI  | EMA50</code>\n<code>-------------------------</code>"]
-                for tf_key, cfg in TIMEFRAMES.items():
-                    df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False)
-                    if not df.empty and len(df) > 50:
-                        close = (df['Close'][ticker] if isinstance(df.columns, pd.MultiIndex) else df['Close']).dropna()
-                        curr_p = round(float(close.iloc[-1]), 2)
-                        r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
-                        e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
-                        reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
-                send_telegram_msg("\n".join(reply))
-
-            elif base_cmd in COMMAND_MAP:
-                tf_key, mode, title = COMMAND_MAP[base_cmd]
-                run_specific_command_scan(tickers, tf_key, mode, title)
-
-            elif base_cmd in ["/scan", "/start"]:
-                force_full = True
-
-        return force_full
     except Exception as e:
         print("Command check error:", e)
-        return False
+
+# Background continuous listener for commands so they work instantly anytime
+def background_command_listener():
+    while True:
+        try:
+            tickers = get_nifty500_tickers()
+            process_user_commands(tickers)
+        except Exception as e:
+            pass
+        time.sleep(5)  # Check for commands every 5 seconds
 
 def run_smart_scan():
+    global LAST_HIGHER_TF_SCAN
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
     now_str = now.strftime('%d-%b %I:%M %p')
-    
-    tickers = get_nifty500_tickers()
-    cmd_requested_full = process_user_commands(tickers)
-    
-    is_morning_0900_scan = (
-        (now.hour == 8 and now.minute >= 45) or 
-        (now.hour == 9 and now.minute <= 10) or 
-        os.getenv("FORCE_FULL_SCAN") == "true" or
-        cmd_requested_full
-    )
-    
-    # MODE 1: MORNING REPORT (Simple Table Format)
-    if is_morning_0900_scan:
-        msg_lines = [f"🌅 <b>Full Report ({now_str})</b>"]
-        
-        for tf_key, cfg in TIMEFRAMES.items():
-            data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
-            table_rows = []
-            
-            for t in tickers:
-                try:
-                    close = data[t]['Close'].dropna()
-                    if len(close) > 50:
-                        curr_p = round(float(close.iloc[-1]), 2)
-                        curr_r = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
-                        curr_e = round(float(calculate_ema(close, 50).iloc[-1]), 2)
-                        sym = t.replace('.NS', '')
-                        
-                        if curr_r > 60 or curr_r < 30:
-                            zone = " >60" if curr_r > 60 else " <30"
-                            table_rows.append(f"<code>{sym:<10} | ₹{curr_p:<6} | {curr_r:<4} | {zone}</code>")
-                except Exception:
-                    continue
-                    
-            if table_rows:
-                msg_lines.append(f"\n📌 <b>{cfg['label']}</b>\n<code>Symbol     | Price  | RSI  | Zone</code>\n<code>----------------------------------</code>")
-                msg_lines.extend(table_rows[:25]) # Top 25 per timeframe
-                
-        send_telegram_msg("\n".join(msg_lines))
 
-    # MODE 2: EVERY 5-MIN AUTO BREAKOUT (Simple Table Format)
-    else:
-        alert_lines = [f"⚡ <b>5-Min Breakout Status ({now_str})</b>"]
-        has_signal = False
-        
-        for tf_key, cfg in TIMEFRAMES.items():
-            data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
-            tf_signals = []
-            
-            for t in tickers:
-                try:
-                    close = data[t]['Close'].dropna()
-                    if len(close) > 50:
-                        rsi = calculate_rsi(close, 14)
-                        ema50 = calculate_ema(close, 50)
-                        
-                        curr_p = round(float(close.iloc[-1]), 2)
+    current_hour = now.hour
+    current_min = now.minute
+    total_mins = current_hour * 60 + current_min
+
+    is_market_active = (9 * 60 <= total_mins <= 16 * 60)
+
+    tickers = get_nifty500_tickers()
+
+    if not is_market_active:
+        print(f"[{now_str}] Market closed hours. Auto-scan paused, but commands are active...")
+        return
+
+    is_morning_0900_scan = (current_hour == 9 and current_min <= 10)
+
+    timeframes_to_scan = ["1h"]
+    current_ts = time.time()
+    should_scan_higher_tf = is_morning_0900_scan or (current_ts - LAST_HIGHER_TF_SCAN >= 1800)
+
+    if should_scan_higher_tf:
+        timeframes_to_scan = ["1h", "1d", "1wk"]
+        LAST_HIGHER_TF_SCAN = current_ts
+
+    for tf_key in timeframes_to_scan:
+        cfg = TIMEFRAMES[tf_key]
+        data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True, auto_adjust=False)
+        bo_list, bd_list, ema_list = [], [], []
+
+        for t in tickers:
+            try:
+                close = data[t]['Close'].dropna() if isinstance(data.columns, pd.MultiIndex) else data['Close'].dropna()
+                if len(close) > 50:
+                    rsi = calculate_rsi(close, 14)
+                    ema50 = calculate_ema(close, 50)
+
+                    curr_p = round(float(close.iloc[-1]), 2)
+                    curr_r = round(float(rsi.iloc[-1]), 1)
+                    curr_e = round(float(ema50.iloc[-1]), 2)
+                    sym = t.replace('.NS', '')
+
+                    if is_morning_0900_scan:
+                        if curr_r > 60:
+                            bo_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
+                        elif curr_r < 30:
+                            bd_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
+                    else:
+                        prev_r = round(float(rsi.iloc[-2]), 1)
                         prev_p = round(float(close.iloc[-2]), 2)
-                        curr_r, prev_r = round(float(rsi.iloc[-1]), 1), round(float(rsi.iloc[-2]), 1)
-                        curr_e = round(float(ema50.iloc[-1]), 2)
-                        sym = t.replace('.NS', '')
-                        
+                        prev_e = round(float(ema50.iloc[-2]), 2)
+
                         if curr_r > 60 and prev_r <= 60:
-                            tf_signals.append(f"<code>{sym:<10} | ₹{curr_p:<6} | {curr_r:<4} | RSI>60 🔥</code>")
-                        elif curr_r < 30 and prev_r >= 30:
-                            tf_signals.append(f"<code>{sym:<10} | ₹{curr_p:<6} | {curr_r:<4} | RSI<30 ❄️</code>")
-                except Exception:
-                    continue
-            
-            if tf_signals:
-                has_signal = True
-                alert_lines.append(f"\n⏱ <b>{cfg['label']}</b>\n<code>Symbol     | Price  | RSI  | Signal</code>\n<code>----------------------------------</code>")
-                alert_lines.extend(tf_signals[:15])
-        
-        if has_signal:
-            send_telegram_msg("\n".join(alert_lines))
+                            bo_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
+                        if curr_r < 30 and prev_r >= 30:
+                            bd_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
+                        if curr_p > curr_e and prev_p <= prev_e:
+                            ema_list.append({'Symbol': sym, 'Price': curr_p, 'EMA50': curr_e})
+            except Exception:
+                continue
+
+        if bo_list:
+            bo_df = pd.DataFrame(bo_list).sort_values(by='RSI', ascending=False)
+            title_prefix = "Morning RSI > 60" if is_morning_0900_scan else "Fresh RSI > 60 Breakout"
+            msg = [f"🔥 <b>{cfg['label']} — {title_prefix} ({now_str})</b>", "<code>Symbol     | Price    | RSI</code>", "<code>------------------------------</code>"]
+            for _, r in bo_df.head(25).iterrows():
+                msg.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | {r['RSI']:<5}</code>")
+            send_telegram_msg("\n".join(msg))
+
+        if bd_list:
+            bd_df = pd.DataFrame(bd_list).sort_values(by='RSI', ascending=True)
+            title_prefix = "Morning RSI < 30" if is_morning_0900_scan else "Fresh RSI < 30 Breakdown"
+            msg = [f"❄️ <b>{cfg['label']} — {title_prefix} ({now_str})</b>", "<code>Symbol     | Price    | RSI</code>", "<code>------------------------------</code>"]
+            for _, r in bd_df.head(25).iterrows():
+                msg.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | {r['RSI']:<5}</code>")
+            send_telegram_msg("\n".join(msg))
+
+        if ema_list and not is_morning_0900_scan:
+            ema_df = pd.DataFrame(ema_list).sort_values(by='Price', ascending=False)
+            msg = [f"🚀 <b>{cfg['label']} — Fresh Price > 50 EMA Crossover ({now_str})</b>", "<code>Symbol     | Price    | 50 EMA</code>", "<code>------------------------------</code>"]
+            for _, r in ema_df.head(25).iterrows():
+                msg.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | ₹{r['EMA50']:<6}</code>")
+            send_telegram_msg("\n".join(msg))
 
 if __name__ == "__main__":
-    run_smart_scan()
-        
+    print("Bot is running continuously with background command listener...")
+    send_telegram_msg("🤖 Bot successfully start ho gaya hai aur commands ab independent thread par active hain!")
+    
+    # Start command listener in a separate background thread
+    listener_thread = threading.Thread(target=background_command_listener, daemon=True)
+    listener_thread.start()
+    
+    while True:
+        try:
+            run_smart_scan()
+        except Exception as e:
+            print("Error:", e)
+        print("Waiting 5 minutes for next scan...")
+        time.sleep(300)
