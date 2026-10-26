@@ -34,10 +34,9 @@ COMMAND_MAP = {
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
 }
 
-# Global cache for tickers, last fetch date, and higher timeframe timer
+# Global cache for tickers and last fetch date
 CACHED_TICKERS = []
 LAST_FETCH_DATE = None
-LAST_HIGHER_TF_SCAN = 0
 
 def get_nifty500_tickers():
     global CACHED_TICKERS, LAST_FETCH_DATE
@@ -197,10 +196,9 @@ def process_user_commands(tickers):
             requests.get(f"{url}?offset={last_update_id + 1}", timeout=5)
 
     except Exception as e:
-        print("Command check error:", e)
+                    print("Command check error:", e)
 
 def run_smart_scan():
-    global LAST_HIGHER_TF_SCAN
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
     now_str = now.strftime('%d-%b %I:%M %p')
@@ -221,19 +219,7 @@ def run_smart_scan():
 
     is_morning_0900_scan = (current_hour == 9 and current_min <= 10)
 
-    # 1. 1h timeframe will scan every 5 minutes
-    timeframes_to_scan = ["1h"]
-    
-    # 2. 1d and 1wk timeframes will scan every 30 minutes (1800 seconds)
-    current_ts = time.time()
-    should_scan_higher_tf = is_morning_0900_scan or (current_ts - LAST_HIGHER_TF_SCAN >= 1800)
-
-    if should_scan_higher_tf:
-        timeframes_to_scan = ["1h", "1d", "1wk"]
-        LAST_HIGHER_TF_SCAN = current_ts
-
-    for tf_key in timeframes_to_scan:
-        cfg = TIMEFRAMES[tf_key]
+    for tf_key, cfg in TIMEFRAMES.items():
         data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True, auto_adjust=False)
         bo_list, bd_list, ema_list = [], [], []
 
@@ -301,4 +287,3 @@ if __name__ == "__main__":
             print("Error:", e)
         print("Waiting 5 minutes for next scan...")
         time.sleep(300)
-            
