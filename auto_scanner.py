@@ -159,10 +159,14 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
             send_telegram_msg(f"❌ <b>{title}:</b> Is samay criteria match karne wala koi stock nahi mila.")
             return
 
-        is_rsi = "rsi" in mode
-
-        if is_rsi:
-            res_df = pd.DataFrame(results).sort_values(by='RSI', ascending=(mode == "rsi30"))
+        # Fixed sorting and display for rsi30, rsi60, and ema50
+        if mode == "rsi30":
+            res_df = pd.DataFrame(results).sort_values(by='RSI', ascending=True)
+            lines = [f"<b>{title}</b>\n<code>Symbol     | Price    | RSI</code>\n<code>------------------------------</code>"]
+            for _, r in res_df.head(30).iterrows():
+                lines.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | {r['RSI']:<5}</code>")
+        elif mode == "rsi60":
+            res_df = pd.DataFrame(results).sort_values(by='RSI', ascending=False)
             lines = [f"<b>{title}</b>\n<code>Symbol     | Price    | RSI</code>\n<code>------------------------------</code>"]
             for _, r in res_df.head(30).iterrows():
                 lines.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | {r['RSI']:<5}</code>")
@@ -261,7 +265,6 @@ def run_smart_scan():
     timeframes_to_scan = ["1h"]
     current_ts = time.time()
     
-    # 30 minutes interval check for higher timeframes (1d & 1wk)
     should_scan_higher_tf = is_morning_0900_scan or (current_ts - LAST_HIGHER_TF_SCAN >= 1800)
 
     if should_scan_higher_tf:
@@ -332,5 +335,5 @@ if __name__ == "__main__":
         except Exception as e:
             print("Error:", e)
         print("Waiting 15 minutes for next scan...")
-        time.sleep(900)  # Workflow loop set to 15 minutes
-                
+        time.sleep(900)
+                        
