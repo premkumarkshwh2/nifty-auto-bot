@@ -112,13 +112,25 @@ def send_telegram_msg(text):
         requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"})
 
 def extract_close_series(data, t):
+    """Robust extractor handling all variations of yfinance MultiIndex and SingleIndex columns."""
     try:
         if isinstance(data.columns, pd.MultiIndex):
-            return data[t]['Close'].dropna()
+            try:
+                if t in data.columns.get_level_values(0):
+                    return data[t]['Close'].dropna()
+            except Exception:
+                pass
+            try:
+                if t in data.columns.get_level_values(1):
+                    return data['Close'][t].dropna()
+            except Exception:
+                pass
         else:
-            return data['Close'].dropna()
+            if 'Close' in data.columns:
+                return data['Close'].dropna()
     except Exception:
-        return pd.Series(dtype=float)
+        pass
+    return pd.Series(dtype=float)
 
 def run_specific_command_scan(tickers, tf_key, mode, title):
     try:
@@ -126,6 +138,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
         cfg = TIMEFRAMES[tf_key]
         results = []
 
+        # Single request approach to prevent timeout/delay issues
         data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True, auto_adjust=False)
 
         for t in tickers:
@@ -135,12 +148,12 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
                     rsi_s = calculate_rsi(close, 14)
                     ema_s = calculate_ema(close, 50)
                     
-                    if rsi_s.empty or ema_s.empty:
+                    if rsi_s.empty:
                         continue
                         
                     curr_p = round(float(close.iloc[-1]), 2)
                     curr_rsi = round(float(rsi_s.iloc[-1]), 1)
-                    curr_ema = round(float(ema_s.iloc[-1]), 2)
+                    curr_ema = round(float(ema_s.iloc[-1]), 2) if not ema_s.empty else 0
                     sym = t.replace('.NS', '')
 
                     if pd.isna(curr_rsi):
@@ -159,7 +172,6 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
             send_telegram_msg(f"❌ <b>{title}:</b> Is samay criteria match karne wala koi stock nahi mila.")
             return
 
-        # Fixed sorting and display for rsi30, rsi60, and ema50
         if mode == "rsi30":
             res_df = pd.DataFrame(results).sort_values(by='RSI', ascending=True)
             lines = [f"<b>{title}</b>\n<code>Symbol     | Price    | RSI</code>\n<code>------------------------------</code>"]
@@ -336,4 +348,4 @@ if __name__ == "__main__":
             print("Error:", e)
         print("Waiting 15 minutes for next scan...")
         time.sleep(900)
-                        
+                
