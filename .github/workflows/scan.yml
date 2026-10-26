@@ -10,7 +10,7 @@ on:
 
 jobs:
   run-bot:
-  runs-on: ubuntu-latest
+    runs-on: ubuntu-latest
 
     steps:
       # 1. Repository ka code checkout karein
@@ -31,7 +31,7 @@ jobs:
           pip install pandas yfinance pytz requests
 
       # 4. Bot script run karein
-        name: Run Smart Scanner & Bot
+      - name: Run Smart Scanner & Bot
         run: |
           python auto_scanner.py
           
