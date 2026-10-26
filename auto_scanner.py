@@ -29,27 +29,24 @@ COMMAND_MAP = {
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
 }
 
-def get_all_nse_tickers():
-    """NSE ke saare stocks ki list fetch karne ka function"""
-    headers = {"User-Agent": "Mozilla/5.0"}
+def get_nifty500_tickers():
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/"}
     urls = [
         "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
-        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv",
-        "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
+        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv"
     ]
     for url in urls:
         try:
             res = requests.get(url, headers=headers, timeout=15)
-            if res.status_code == 200:
+            if res.status_code == 200 and "Symbol" in res.text:
                 df = pd.read_csv(io.StringIO(res.text))
-                if 'Symbol' in df.columns:
-                    tickers = [f"{str(s).strip()}.NS" for s in df['Symbol'].dropna().tolist() if "NIFTY" not in str(s)]
-                    if len(tickers) > 20:
-                        return tickers
+                tickers = [f"{str(s).strip()}.NS" for s in df['Symbol'].dropna().tolist() if "NIFTY" not in str(s)]
+                if len(tickers) > 100:
+                    return tickers
         except Exception:
             continue
-    # Fallback tickers agar NSE site block kare
-    return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS", "LT.NS"]
+    return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS"]
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -93,10 +90,9 @@ def get_close_series(data, ticker):
 
 def run_specific_command_scan(tickers, tf_key, mode, title):
     cfg = TIMEFRAMES[tf_key]
-    send_telegram_msg(f"⏳ Scanning {title} (Kripya thoda intezaar karein)...")
+    send_telegram_msg(f"⏳ Scanning {title} (Nifty 500)...")
     
     results = []
-    # Bade list ko handle karne ke liye batch-wise download karenge taaki Yahoo block na kare
     batch_size = 40
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i+batch_size]
@@ -105,7 +101,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
             for t in batch:
                 try:
                     close = get_close_series(data, t)
-                    if len(close) > 20:
+                    if len(close) > 15:
                         rsi_s = calculate_rsi(close, 14)
                         ema_s = calculate_ema(close, 50)
                         curr_p = round(float(close.iloc[-1]), 2)
@@ -125,9 +121,10 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
             continue
 
     if not results:
-        send_telegram_msg(f"❌ <b>{title}:</b> Koi stock match nahi hua.")
+        send_telegram_msg(f"❌ <b>{title}:</b> Is samay koi bhi stock match nahi hua.")
         return
 
+    # Agar mode rsi30 hai toh ascending=True rakhenge taaki sabse kam RSI sabse upar dikhe
     res_df = pd.DataFrame(results).sort_values(by='Val', ascending=(mode == "rsi30"))
     lines = [f"<b>{title}</b>\n<code>Symbol     | Price  | Value  | Signal</code>\n<code>----------------------------------</code>"]
     for _, r in res_df.head(30).iterrows():
@@ -135,7 +132,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
     send_telegram_msg("\n".join(lines))
 
 def run_full_scan_report(tickers):
-    send_telegram_msg("🔍 <b>Full All-in-One Report Scan Shuru ho gaya hai...</b>")
+    send_telegram_msg("🔍 <b>Nifty 500 Full All-in-One Report Scan Shuru ho gaya hai...</b>")
     cfg = TIMEFRAMES["1d"]
     results_bo, results_bd = [], []
     
@@ -147,7 +144,7 @@ def run_full_scan_report(tickers):
             for t in batch:
                 try:
                     close = get_close_series(data, t)
-                    if len(close) > 20:
+                    if len(close) > 15:
                         curr_p = round(float(close.iloc[-1]), 2)
                         curr_r = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
                         sym = t.replace('.NS', '')
@@ -161,13 +158,16 @@ def run_full_scan_report(tickers):
             continue
 
     if results_bo:
-        msg = [f"📊 <b>1 Day — All-in-One RSI > 60 Report</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
+        msg = [f"📊 <b>1 Day — Nifty 500 RSI > 60 Report</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
         msg.extend(results_bo[:25])
         send_telegram_msg("\n".join(msg))
+        
     if results_bd:
-        msg = [f"📊 <b>1 Day — All-in-One RSI < 30 Report</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
+        msg = [f"📊 <b>1 Day — Nifty 500 RSI < 30 Report</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
         msg.extend(results_bd[:25])
         send_telegram_msg("\n".join(msg))
+    else:
+        send_telegram_msg("📊 <b>1 Day — RSI < 30 Report:</b> Is samay 1 Day timeframe par koi bhi stock RSI < 30 mein nahi hai.")
 
 def process_user_commands(tickers):
     global CHAT_ID, LAST_UPDATE_ID
@@ -197,7 +197,7 @@ def process_user_commands(tickers):
                             df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False)
                             if not df.empty:
                                 close = get_close_series(df, ticker)
-                                if len(close) > 20:
+                                if len(close) > 15:
                                     curr_p = round(float(close.iloc[-1]), 2)
                                     r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
                                     e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
@@ -216,14 +216,27 @@ def process_user_commands(tickers):
         print("Command error:", e)
 
 if __name__ == "__main__":
-    print("Bot started successfully and listening for commands...")
-    tickers = get_all_nse_tickers()
-    print(f"Total Tickers Loaded: {len(tickers)}")
+    print("Bot started successfully and listening for commands & 15-min auto-updates...")
+    tickers = get_nifty500_tickers()
+    print(f"Total Nifty 500 Tickers Loaded: {len(tickers)}")
     
+    last_auto_scan_time = 0
+    AUTO_SCAN_INTERVAL = 900 # 15 minutes
+
     while True:
         try:
+            current_time = time.time()
+            
+            # Har 15 minute mein automatic scan chalega
+            if current_time - last_auto_scan_time >= AUTO_SCAN_INTERVAL:
+                send_telegram_msg("⏰ <b>15-Minute Auto-Scan Update Shuru ho raha hai...</b>")
+                run_full_scan_report(tickers)
+                last_auto_scan_time = time.time()
+
+            # Commands ke liye lagatar check karega
             process_user_commands(tickers)
+            
         except Exception as e:
             print("Error:", e)
-        time.sleep(5)
         
+        time.sleep(3)
