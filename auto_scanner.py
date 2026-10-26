@@ -6,7 +6,7 @@ from datetime import datetime
 import time
 import pytz
 
-# Apna Bot Token aur Chat ID yahan daal dein
+# Apna Telegram Bot Token aur Chat ID yahan daal dein
 BOT_TOKEN = "8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo"
 CHAT_ID = "907465056"
 LAST_UPDATE_ID = 0
@@ -29,23 +29,27 @@ COMMAND_MAP = {
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
 }
 
-def get_nifty_tickers():
+def get_all_nse_tickers():
+    """NSE ke saare stocks ki list fetch karne ka function"""
     headers = {"User-Agent": "Mozilla/5.0"}
     urls = [
-        "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
-        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty50list.csv"
+        "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv",
+        "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
     ]
     for url in urls:
         try:
-            res = requests.get(url, headers=headers, timeout=10)
+            res = requests.get(url, headers=headers, timeout=15)
             if res.status_code == 200:
                 df = pd.read_csv(io.StringIO(res.text))
-                tickers = [f"{str(s).strip()}.NS" for s in df['Symbol'].dropna().tolist()]
-                if len(tickers) > 10:
-                    return tickers
+                if 'Symbol' in df.columns:
+                    tickers = [f"{str(s).strip()}.NS" for s in df['Symbol'].dropna().tolist() if "NIFTY" not in str(s)]
+                    if len(tickers) > 20:
+                        return tickers
         except Exception:
             continue
-    return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS"]
+    # Fallback tickers agar NSE site block kare
+    return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS", "LT.NS"]
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -89,31 +93,34 @@ def get_close_series(data, ticker):
 
 def run_specific_command_scan(tickers, tf_key, mode, title):
     cfg = TIMEFRAMES[tf_key]
-    send_telegram_msg(f"⏳ Scanning {title}...")
-    try:
-        data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
-    except Exception as e:
-        send_telegram_msg(f"❌ Data download error: {e}")
-        return
-
+    send_telegram_msg(f"⏳ Scanning {title} (Kripya thoda intezaar karein)...")
+    
     results = []
-    for t in tickers:
+    # Bade list ko handle karne ke liye batch-wise download karenge taaki Yahoo block na kare
+    batch_size = 40
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i+batch_size]
         try:
-            close = get_close_series(data, t)
-            if len(close) > 20:
-                rsi_s = calculate_rsi(close, 14)
-                ema_s = calculate_ema(close, 50)
-                curr_p = round(float(close.iloc[-1]), 2)
-                curr_rsi = round(float(rsi_s.iloc[-1]), 1)
-                curr_ema = round(float(ema_s.iloc[-1]), 2)
-                sym = t.replace('.NS', '')
+            data = yf.download(batch, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
+            for t in batch:
+                try:
+                    close = get_close_series(data, t)
+                    if len(close) > 20:
+                        rsi_s = calculate_rsi(close, 14)
+                        ema_s = calculate_ema(close, 50)
+                        curr_p = round(float(close.iloc[-1]), 2)
+                        curr_rsi = round(float(rsi_s.iloc[-1]), 1)
+                        curr_ema = round(float(ema_s.iloc[-1]), 2)
+                        sym = t.replace('.NS', '')
 
-                if mode == "rsi60" and curr_rsi > 60:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'Val': curr_rsi, 'Tag': 'RSI>60 🔥'})
-                elif mode == "rsi30" and curr_rsi < 30:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'Val': curr_rsi, 'Tag': 'RSI<30 ❄️'})
-                elif mode == "ema50" and curr_p > curr_ema:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'Val': curr_ema, 'Tag': '>50EMA 🚀'})
+                        if mode == "rsi60" and curr_rsi > 60:
+                            results.append({'Symbol': sym, 'Price': curr_p, 'Val': curr_rsi, 'Tag': 'RSI>60 🔥'})
+                        elif mode == "rsi30" and curr_rsi < 30:
+                            results.append({'Symbol': sym, 'Price': curr_p, 'Val': curr_rsi, 'Tag': 'RSI<30 ❄️'})
+                        elif mode == "ema50" and curr_p > curr_ema:
+                            results.append({'Symbol': sym, 'Price': curr_p, 'Val': curr_ema, 'Tag': '>50EMA 🚀'})
+                except Exception:
+                    continue
         except Exception:
             continue
 
@@ -123,39 +130,44 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
 
     res_df = pd.DataFrame(results).sort_values(by='Val', ascending=(mode == "rsi30"))
     lines = [f"<b>{title}</b>\n<code>Symbol     | Price  | Value  | Signal</code>\n<code>----------------------------------</code>"]
-    for _, r in res_df.head(25).iterrows():
+    for _, r in res_df.head(30).iterrows():
         lines.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<6} | {r['Val']:<6} | {r['Tag']}</code>")
     send_telegram_msg("\n".join(lines))
 
 def run_full_scan_report(tickers):
     send_telegram_msg("🔍 <b>Full All-in-One Report Scan Shuru ho gaya hai...</b>")
-    for tf_key, cfg in TIMEFRAMES.items():
+    cfg = TIMEFRAMES["1d"]
+    results_bo, results_bd = [], []
+    
+    batch_size = 40
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i+batch_size]
         try:
-            data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
+            data = yf.download(batch, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
+            for t in batch:
+                try:
+                    close = get_close_series(data, t)
+                    if len(close) > 20:
+                        curr_p = round(float(close.iloc[-1]), 2)
+                        curr_r = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
+                        sym = t.replace('.NS', '')
+                        if curr_r > 60:
+                            results_bo.append(f"<code>{sym:<10} | ₹{curr_p:<6} | {curr_r:<4} | >60 🔥</code>")
+                        elif curr_r < 30:
+                            results_bd.append(f"<code>{sym:<10} | ₹{curr_p:<6} | {curr_r:<4} | <30 ❄️</code>")
+                except Exception:
+                    continue
         except Exception:
             continue
-        bo_rows, bd_rows = [], []
-        for t in tickers:
-            try:
-                close = get_close_series(data, t)
-                if len(close) > 20:
-                    curr_p = round(float(close.iloc[-1]), 2)
-                    curr_r = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
-                    sym = t.replace('.NS', '')
-                    if curr_r > 60:
-                        bo_rows.append(f"<code>{sym:<10} | ₹{curr_p:<6} | {curr_r:<4} | >60 🔥</code>")
-                    elif curr_r < 30:
-                        bd_rows.append(f"<code>{sym:<10} | ₹{curr_p:<6} | {curr_r:<4} | <30 ❄️</code>")
-            except Exception:
-                continue
-        if bo_rows:
-            msg = [f"📊 <b>{cfg['label']} — RSI > 60 Report</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
-            msg.extend(bo_rows[:20])
-            send_telegram_msg("\n".join(msg))
-        if bd_rows:
-            msg = [f"📊 <b>{cfg['label']} — RSI < 30 Report</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
-            msg.extend(bd_rows[:20])
-            send_telegram_msg("\n".join(msg))
+
+    if results_bo:
+        msg = [f"📊 <b>1 Day — All-in-One RSI > 60 Report</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
+        msg.extend(results_bo[:25])
+        send_telegram_msg("\n".join(msg))
+    if results_bd:
+        msg = [f"📊 <b>1 Day — All-in-One RSI < 30 Report</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
+        msg.extend(results_bd[:25])
+        send_telegram_msg("\n".join(msg))
 
 def process_user_commands(tickers):
     global CHAT_ID, LAST_UPDATE_ID
@@ -205,12 +217,13 @@ def process_user_commands(tickers):
 
 if __name__ == "__main__":
     print("Bot started successfully and listening for commands...")
-    tickers = get_nifty_tickers()
+    tickers = get_all_nse_tickers()
+    print(f"Total Tickers Loaded: {len(tickers)}")
     
     while True:
         try:
             process_user_commands(tickers)
         except Exception as e:
             print("Error:", e)
-        time.sleep(10)
+        time.sleep(5)
         
