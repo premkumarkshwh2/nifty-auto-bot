@@ -1,10 +1,10 @@
-name: Nifty 500 Telegram Bot
+name: Nifty 500 Market Hours Bot
 
 on:
   schedule:
-    # Yeh har roz subah 9:00 AM IST (3:30 UTC) par bot ko automatically trigger karega
-    - cron: '30 3 * * 1-5'
-  workflow_dispatch: # Isse aap GitHub interface se manually bhi run kar sakte hain
+    # Yeh cron Monday to Friday, Subah 9:00 AM se Shaam 4:00 PM IST (03:30 UTC se 10:30 UTC) tak har 15 min par chalega
+    - cron: '*/15 3-10 * * 1-5'
+  workflow_dispatch: # Manual run karne ke liye
 
 jobs:
   run-bot:
@@ -24,7 +24,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run Telegram Bot
+    - name: Run Telegram Bot Scan
       env:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         CHAT_ID: ${{ secrets.CHAT_ID }}
