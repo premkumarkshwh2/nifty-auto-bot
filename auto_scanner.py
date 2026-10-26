@@ -8,7 +8,6 @@ import time
 import pytz
 import warnings
 import logging
-import threading
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 logger = logging.getLogger('yfinance')
@@ -46,26 +45,18 @@ def get_nifty500_tickers():
     if CACHED_TICKERS and LAST_FETCH_DATE == today:
         return CACHED_TICKERS
 
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/"}
     urls = [
-        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv",
-        "https://raw.githubusercontent.com/anuj-singh-01/nse-stocks-list/main/ind_nifty500list.csv",
         "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
-        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
+        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv"
     ]
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.google.com/"
-    }
-
     for url in urls:
         try:
             res = requests.get(url, headers=headers, timeout=15)
-            if res.status_code == 200 and ("Symbol" in res.text or "symbol" in res.text):
+            if res.status_code == 200 and "Symbol" in res.text:
                 df = pd.read_csv(io.StringIO(res.text))
-                col_name = 'Symbol' if 'Symbol' in df.columns else ('SYMBOL' if 'SYMBOL' in df.columns else df.columns[0])
-                tickers = [f"{str(s).strip()}.NS" for s in df[col_name].dropna().tolist() if "NIFTY" not in str(s)]
+                tickers = [f"{str(s).strip()}.NS" for s in df['Symbol'].dropna().tolist() if "NIFTY" not in str(s)]
                 if len(tickers) > 100:
                     CACHED_TICKERS = tickers
                     LAST_FETCH_DATE = today
@@ -75,7 +66,7 @@ def get_nifty500_tickers():
             
     if CACHED_TICKERS:
         return CACHED_TICKERS
-    raise Exception("Nifty 500 list kisi bhi source se fetch nahi ho payi.")
+    raise Exception("Nifty 500 list fetch nahi ho payi.")
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -84,8 +75,7 @@ def calculate_rsi(series, period=14):
     avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50)  # Fallback to neutral if NaN
+    return 100 - (100 / (1 + rs))
 
 def calculate_ema(series, period=50):
     return series.ewm(span=period, adjust=False).mean()
@@ -123,28 +113,14 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
 
         for t in tickers:
             try:
-                # Handle both MultiIndex and SingleIndex dataframe structures
-                if isinstance(data.columns, pd.MultiIndex):
-                    if t not in data.columns.levels[0]:
-                        continue
-                    close = data[t]['Close'].dropna()
-                else:
-                    close = data['Close'].dropna() if 'Close' in data.columns else pd.Series(dtype=float)
-
-                if len(close) > 30:
+                close = data[t]['Close'].dropna() if isinstance(data.columns, pd.MultiIndex) else data['Close'].dropna()
+                if len(close) > 50:
                     rsi_s = calculate_rsi(close, 14)
                     ema_s = calculate_ema(close, 50)
-                    
-                    if rsi_s.empty or ema_s.empty:
-                        continue
-                        
                     curr_p = round(float(close.iloc[-1]), 2)
                     curr_rsi = round(float(rsi_s.iloc[-1]), 1)
                     curr_ema = round(float(ema_s.iloc[-1]), 2)
                     sym = t.replace('.NS', '')
-
-                    if pd.isna(curr_rsi) or pd.isna(curr_ema):
-                        continue
 
                     if mode == "rsi60" and curr_rsi > 60:
                         results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi})
@@ -156,7 +132,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
                 continue
 
         if not results:
-            send_telegram_msg(f"❌ <b>{title}:</b> Is samay criteria match karne wala koi stock nahi mila.")
+            send_telegram_msg(f"❌ <b>{title}:</b> Koi stock match nahi hua.")
             return
 
         is_rsi = "rsi" in mode
@@ -204,23 +180,14 @@ def process_user_commands(tickers):
                     ticker = f"{sym}.NS"
                     reply = [f"📊 <b>{sym} — Status</b>\n<code>TF   | Price  | RSI  | EMA50</code>\n<code>-------------------------</code>"]
                     for tf_key, cfg in TIMEFRAMES.items():
-                        try:
-                            df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False, auto_adjust=False)
-                            if not df.empty:
-                                close = (df['Close'][ticker] if isinstance(df.columns, pd.MultiIndex) else df['Close']).dropna()
-                                if len(close) > 30:
-                                    curr_p = round(float(close.iloc[-1]), 2)
-                                    r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
-                                    e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
-                                    reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
-                        except Exception as tf_err:
-                            print(f"Error checking {tf_key} for {sym}: {tf_err}")
-                            continue
-                    
-                    if len(reply) > 1:
-                        send_telegram_msg("\n".join(reply))
-                    else:
-                        send_telegram_msg(f"❌ <b>{sym}:</b> Data fetch nahi ho paya ya symbol galat hai.")
+                        df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False, auto_adjust=False)
+                        if not df.empty and len(df) > 50:
+                            close = (df['Close'][ticker] if isinstance(df.columns, pd.MultiIndex) else df['Close']).dropna()
+                            curr_p = round(float(close.iloc[-1]), 2)
+                            r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
+                            e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
+                            reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
+                    send_telegram_msg("\n".join(reply))
 
                 elif base_cmd in COMMAND_MAP:
                     tf_key, mode, title = COMMAND_MAP[base_cmd]
@@ -232,16 +199,6 @@ def process_user_commands(tickers):
     except Exception as e:
         print("Command check error:", e)
 
-# Background continuous listener for commands so they work instantly anytime
-def background_command_listener():
-    while True:
-        try:
-            tickers = get_nifty500_tickers()
-            process_user_commands(tickers)
-        except Exception as e:
-            pass
-        time.sleep(5)  # Check for commands every 5 seconds
-
 def run_smart_scan():
     global LAST_HIGHER_TF_SCAN
     ist = pytz.timezone('Asia/Kolkata')
@@ -252,17 +209,22 @@ def run_smart_scan():
     current_min = now.minute
     total_mins = current_hour * 60 + current_min
 
+    # Live market hours window: 09:00 AM to 04:00 PM (16:00)
     is_market_active = (9 * 60 <= total_mins <= 16 * 60)
 
     tickers = get_nifty500_tickers()
+    process_user_commands(tickers)
 
     if not is_market_active:
         print(f"[{now_str}] Market closed hours. Auto-scan paused, but commands are active...")
         return
 
-    is_morning_0900_scan = (current_hour == 9 and current_min <= 15)
+    is_morning_0900_scan = (current_hour == 9 and current_min <= 10)
 
+    # 1. 1h timeframe will scan every 5 minutes
     timeframes_to_scan = ["1h"]
+    
+    # 2. 1d and 1wk timeframes will scan every 30 minutes (1800 seconds)
     current_ts = time.time()
     should_scan_higher_tf = is_morning_0900_scan or (current_ts - LAST_HIGHER_TF_SCAN >= 1800)
 
@@ -277,14 +239,8 @@ def run_smart_scan():
 
         for t in tickers:
             try:
-                if isinstance(data.columns, pd.MultiIndex):
-                    if t not in data.columns.levels[0]:
-                        continue
-                    close = data[t]['Close'].dropna()
-                else:
-                    close = data['Close'].dropna() if 'Close' in data.columns else pd.Series(dtype=float)
-
-                if len(close) > 30:
+                close = data[t]['Close'].dropna() if isinstance(data.columns, pd.MultiIndex) else data['Close'].dropna()
+                if len(close) > 50:
                     rsi = calculate_rsi(close, 14)
                     ema50 = calculate_ema(close, 50)
 
@@ -292,9 +248,6 @@ def run_smart_scan():
                     curr_r = round(float(rsi.iloc[-1]), 1)
                     curr_e = round(float(ema50.iloc[-1]), 2)
                     sym = t.replace('.NS', '')
-
-                    if pd.isna(curr_r) or pd.isna(curr_e):
-                        continue
 
                     if is_morning_0900_scan:
                         if curr_r > 60:
@@ -339,17 +292,13 @@ def run_smart_scan():
             send_telegram_msg("\n".join(msg))
 
 if __name__ == "__main__":
-    print("Bot is running continuously with background command listener...")
-    send_telegram_msg("🤖 Bot successfully start ho gaya hai aur commands ab independent thread par active hain!")
-    
-    # Start command listener in a separate background thread
-    listener_thread = threading.Thread(target=background_command_listener, daemon=True)
-    listener_thread.start()
-    
+    print("Bot is running continuously...")
+    send_telegram_msg("🤖 Bot successfully start ho gaya hai aur sabhi commands active hain!")
     while True:
         try:
             run_smart_scan()
         except Exception as e:
             print("Error:", e)
-        print("Waiting 15 minutes for next scan...")
-        time.sleep(900)  # Changed from 300 seconds to 900 seconds (15 minutes)
+        print("Waiting 5 minutes for next scan...")
+        time.sleep(300)
+            
