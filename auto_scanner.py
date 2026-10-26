@@ -37,7 +37,7 @@ COMMAND_MAP = {
 
 CACHED_TICKERS = []
 LAST_FETCH_DATE = None
-LAST_HIGHER_TF_SCAN = 0
+LAST_HIGHER_TF_SCAN = 0  # 1d & 1wk ke liye 30 minutes (1800 seconds) track karega
 
 def get_nifty500_tickers():
     global CACHED_TICKERS, LAST_FETCH_DATE
@@ -112,18 +112,13 @@ def send_telegram_msg(text):
         requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"})
 
 def extract_close_series(data, t):
-    """Safely extract Close price series for a ticker from multiindex or single index yfinance download."""
     try:
         if isinstance(data.columns, pd.MultiIndex):
-            if t in data.columns.levels[1]:
-                s = data[('Close', t)].dropna()
-                return s
+            return data[t]['Close'].dropna()
         else:
-            if 'Close' in data.columns:
-                return data['Close'].dropna()
+            return data['Close'].dropna()
     except Exception:
-        pass
-    return pd.Series(dtype=float)
+        return pd.Series(dtype=float)
 
 def run_specific_command_scan(tickers, tf_key, mode, title):
     try:
@@ -263,8 +258,11 @@ def run_smart_scan():
 
     is_morning_0900_scan = (current_hour == 9 and current_min <= 10)
 
+    # 1h scan har 15 min loop mein chalega
     timeframes_to_scan = ["1h"]
     current_ts = time.time()
+    
+    # 1d aur 1wk scan ab har 30 min (1800 seconds) mein chalenge
     should_scan_higher_tf = is_morning_0900_scan or (current_ts - LAST_HIGHER_TF_SCAN >= 1800)
 
     if should_scan_higher_tf:
@@ -291,7 +289,6 @@ def run_smart_scan():
                     if pd.isna(curr_r):
                         continue
 
-                    # Auto-scan logic for RSI > 60 and RSI < 30
                     if curr_r > 60:
                         bo_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
                     if curr_r < 30:
@@ -335,6 +332,5 @@ if __name__ == "__main__":
             run_smart_scan()
         except Exception as e:
             print("Error:", e)
-        print("Waiting 5 minutes for next scan...")
-        time.sleep(300)
-    
+        print("Waiting 15 minutes for next scan...")
+        time.sleep(900)  # Main loop ab har 15 minutes (900 seconds) mein chalega
