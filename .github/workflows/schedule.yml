@@ -1,4 +1,4 @@
-Name: Smart Nifty 500 RSI Alert
+name: Smart Nifty 500 RSI Alert
 
 on:
   schedule:
