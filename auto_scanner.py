@@ -37,7 +37,7 @@ COMMAND_MAP = {
 
 CACHED_TICKERS = []
 LAST_FETCH_DATE = None
-LAST_HIGHER_TF_SCAN = 0  # 1d & 1wk ke liye 30 minutes (1800 seconds) track karega
+LAST_HIGHER_TF_SCAN = 0
 
 def get_nifty500_tickers():
     global CACHED_TICKERS, LAST_FETCH_DATE
@@ -258,11 +258,10 @@ def run_smart_scan():
 
     is_morning_0900_scan = (current_hour == 9 and current_min <= 10)
 
-    # 1h scan har 15 min loop mein chalega
     timeframes_to_scan = ["1h"]
     current_ts = time.time()
     
-    # 1d aur 1wk scan ab har 30 min (1800 seconds) mein chalenge
+    # 30 minutes interval check for higher timeframes (1d & 1wk)
     should_scan_higher_tf = is_morning_0900_scan or (current_ts - LAST_HIGHER_TF_SCAN >= 1800)
 
     if should_scan_higher_tf:
@@ -333,4 +332,5 @@ if __name__ == "__main__":
         except Exception as e:
             print("Error:", e)
         print("Waiting 15 minutes for next scan...")
-        time.sleep(900)  # Main loop ab har 15 minutes (900 seconds) mein chalega
+        time.sleep(900)  # Workflow loop set to 15 minutes
+                
