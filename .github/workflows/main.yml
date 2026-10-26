@@ -2,9 +2,9 @@ name: Nifty 500 Market Hours Bot
 
 on:
   schedule:
-    # Yeh cron Monday to Friday, Subah 9:00 AM se Shaam 4:00 PM IST (03:30 UTC se 10:30 UTC) tak har 15 min par chalega
+    # Subah 9:00 AM se Shaam 4:00 PM IST (03:30 UTC se 10:30 UTC) tak har 15 min par
     - cron: '*/15 3-10 * * 1-5'
-  workflow_dispatch: # Manual run karne ke liye
+  workflow_dispatch:
 
 jobs:
   run-bot:
