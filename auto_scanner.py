@@ -224,7 +224,6 @@ def process_user_commands(tickers):
     except Exception as e:
         print("Command check error:", e)
 
-# Background continuous listener for commands so they work instantly anytime
 def background_command_listener():
     while True:
         try:
@@ -232,7 +231,7 @@ def background_command_listener():
             process_user_commands(tickers)
         except Exception as e:
             pass
-        time.sleep(5)  # Check for commands every 5 seconds
+        time.sleep(5)
 
 def run_smart_scan():
     global LAST_HIGHER_TF_SCAN
@@ -294,8 +293,15 @@ def run_smart_scan():
 
                         if curr_r > 60 and prev_r <= 60:
                             bo_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
-                        if curr_r < 30 and prev_r >= 30:
-                            bd_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
+                        
+                        # --- FIX: Improved RSI < 30 Auto-Scan Condition ---
+                        # Yeh ab fresh breakdown (curr_r < 30 aur prev_r >= 30) ke sath-sath 
+                        # agar stock oversold zone mein enter hua hai toh ensure karega.
+                        if (curr_r < 30 and prev_r >= 30) or (curr_r < 30 and len(bd_list) < 25):
+                            # Duplicate entry se bachne ke liye check karein
+                            if not any(d['Symbol'] == sym for d in bd_list):
+                                bd_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
+
                         if curr_p > curr_e and prev_p <= prev_e:
                             ema_list.append({'Symbol': sym, 'Price': curr_p, 'EMA50': curr_e})
             except Exception:
@@ -328,7 +334,6 @@ if __name__ == "__main__":
     print("Bot is running continuously with background command listener...")
     send_telegram_msg("🤖 Bot successfully start ho gaya hai aur commands ab independent thread par active hain!")
     
-    # Start command listener in a separate background thread
     listener_thread = threading.Thread(target=background_command_listener, daemon=True)
     listener_thread.start()
     
@@ -339,4 +344,4 @@ if __name__ == "__main__":
             print("Error:", e)
         print("Waiting 5 minutes for next scan...")
         time.sleep(300)
-            
+                
