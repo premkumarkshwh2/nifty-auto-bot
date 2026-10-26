@@ -1,5 +1,3 @@
-!pip install yfinance pandas requests pytz
-
 import requests
 import pandas as pd
 import yfinance as yf
