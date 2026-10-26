@@ -29,19 +29,25 @@ COMMAND_MAP = {
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
 }
 
-def get_nifty50_tickers():
-    """Stability ke liye Nifty 50 use karna behtar hai taki Yahoo block na kare."""
+def get_nifty_tickers():
+    """Nifty tickers fetch karne ke liye safe function"""
     headers = {"User-Agent": "Mozilla/5.0"}
-    url = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            df = pd.read_csv(io.StringIO(res.text))
-            return [f"{str(s).strip()}.NS" for s in df['Symbol'].dropna().tolist()]
-    except Exception:
-        pass
+    urls = [
+        "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
+        "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty50list.csv"
+    ]
+    for url in urls:
+        try:
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                df = pd.read_csv(io.StringIO(res.text))
+                tickers = [f"{str(s).strip()}.NS" for s in df['Symbol'].dropna().tolist()]
+                if len(tickers) > 10:
+                    return tickers
+        except Exception:
+            continue
     # Fallback default tickers agar NSE block kare
-    return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "LICI.NS", "HINDUNILVR.NS"]
+    return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS"]
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -83,98 +89,5 @@ def get_close_series(data, ticker):
         pass
     return pd.Series(dtype=float)
 
-def run_specific_command_scan(tickers, tf_key, mode, title):
-    cfg = TIMEFRAMES[tf_key]
-    send_telegram_msg(f"⏳ Scanning {title}...")
-    try:
-        data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
-    except Exception as e:
-        send_telegram_msg(f"❌ Data download error: {e}")
-        return
-
-    results = []
-    for t in tickers:
-        try:
-            close = get_close_series(data, t)
-            if len(close) > 20:
-                rsi_s = calculate_rsi(close, 14)
-                ema_s = calculate_ema(close, 50)
-                curr_p = round(float(close.iloc[-1]), 2)
-                curr_rsi = round(float(rsi_s.iloc[-1]), 1)
-                curr_ema = round(float(ema_s.iloc[-1]), 2)
-                sym = t.replace('.NS', '')
-
-                if mode == "rsi60" and curr_rsi > 60:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'Val': curr_rsi, 'Tag': 'RSI>60 🔥'})
-                elif mode == "rsi30" and curr_rsi < 30:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'Val': curr_rsi, 'Tag': 'RSI<30 ❄️'})
-                elif mode == "ema50" and curr_p > curr_ema:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'Val': curr_ema, 'Tag': '>50EMA 🚀'})
-        except Exception:
-            continue
-
-    if not results:
-        send_telegram_msg(f"❌ <b>{title}:</b> Koi stock match nahi hua.")
-        return
-
-    res_df = pd.DataFrame(results).sort_values(by='Val', ascending=(mode == "rsi30"))
-    lines = [f"<b>{title}</b>\n<code>Symbol     | Price  | Value  | Signal</code>\n<code>----------------------------------</code>"]
-    for _, r in res_df.head(25).iterrows():
-        lines.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<6} | {r['Val']:<6} | {r['Tag']}</code>")
-    send_telegram_msg("\n".join(lines))
-
-def process_user_commands(tickers):
-    global CHAT_ID, LAST_UPDATE_ID
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={LAST_UPDATE_ID}&timeout=2"
-        res = requests.get(url, timeout=5).json()
-        if not res.get("ok") or not res.get("result"):
-            return
-
-        for item in res["result"]:
-            LAST_UPDATE_ID = item["update_id"] + 1
-            msg = item.get("message", {})
-            if msg.get("chat", {}).get("id"):
-                CHAT_ID = str(msg["chat"]["id"])
-            text = msg.get("text", "").strip()
+def run_specific_command_scan(tickers, tf_key
             
-            if text.startswith("/"):
-                parts = text.split()
-                base_cmd = parts[0].lower().split("@")[0]
-
-                if base_cmd == "/check" and len(parts) >= 2:
-                    sym = parts[1].upper()
-                    ticker = f"{sym}.NS"
-                    reply = [f"📊 <b>{sym} — Status</b>\n<code>TF   | Price  | RSI  | EMA50</code>\n<code>-------------------------</code>"]
-                    for tf_key, cfg in TIMEFRAMES.items():
-                        try:
-                            df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False)
-                            if not df.empty:
-                                close = get_close_series(df, ticker)
-                                if len(close) > 20:
-                                    curr_p = round(float(close.iloc[-1]), 2)
-                                    r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
-                                    e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
-                                    reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
-                        except Exception:
-                            continue
-                    send_telegram_msg("\n".join(reply))
-
-                elif base_cmd == "/scan":
-                    run_specific_command_scan(tickers, "1d", "rsi60", "📊 Full Scan (1D RSI > 60)")
-
-                elif base_cmd in COMMAND_MAP:
-                    tf_key, mode, title = COMMAND_MAP[base_cmd]
-                    run_specific_command_scan(tickers, tf_key, mode, title)
-    except Exception as e:
-        print("Command error:", e)
-
-if __name__ == "__main__":
-    print("Bot started successfully and listening for commands...")
-    tickers = get_nifty50-tickers() if 'get_nifty50_tickers' in globals() else get_nifty50_tickers()
-    
-    while True:
-        # Har iteration mein commands check honge taaki bot fast lage
-        process_user_commands(tickers)
-        time.sleep(3) # Har 3 second mein command check karega
-                
