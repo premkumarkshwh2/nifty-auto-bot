@@ -7,6 +7,7 @@ from datetime import date, datetime
 import pandas as pd
 import pytz
 import requests
+import warnings  # <-- Yeh line add kar di gayi hai
 import yfinance as yf
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -22,7 +23,6 @@ TIMEFRAMES = {
     "1wk": {"interval": "1wk", "period": "2y", "label": "1 Week"},
 }
 
-# 1. Updated COMMAND_MAP with RSI < 30 (Oversold)
 COMMAND_MAP = {
     "/rsi60_1h": ("1h", "rsi60", "🟢 1 Hour RSI > 60"),
     "/rsi60_1d": ("1d", "rsi60", "🟢 1 Day RSI > 60"),
@@ -197,7 +197,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
 
           if mode == "rsi60" and curr_rsi > 60:
             results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
-          elif mode == "rsi30" and curr_rsi < 30:  # 2. Fixed RSI < 30 Condition
+          elif mode == "rsi30" and curr_rsi < 30:
             results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
           elif mode == "ema50" and not pd.isna(curr_ema) and curr_p > curr_ema:
             results.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_ema})
@@ -254,7 +254,6 @@ def process_user_commands(tickers):
   global CHAT_ID
   try:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    # 4. Important Long Polling Fix for getUpdates
     res = requests.get(url, params={"timeout": 10}, timeout=15).json()
     if not res.get("ok") or not res.get("result"):
       return
@@ -393,7 +392,7 @@ def run_smart_scan():
 
           if curr_r > 60:
             bo_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
-          if curr_r < 30:  # 3. Fixed Automatic Scan RSI < 30 Condition
+          if curr_r < 30:
             bd_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
 
           if not pd.isna(curr_e) and curr_p > curr_e:
@@ -463,4 +462,4 @@ if __name__ == "__main__":
       print("Error:", e)
     print("Waiting 15 minutes for next scan...")
     time.sleep(900)
-      
+    
