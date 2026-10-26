@@ -8,14 +8,13 @@ import time
 import pytz
 import warnings
 import logging
-import threading
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 logger = logging.getLogger('yfinance')
 logger.setLevel(logging.CRITICAL)
 
-BOT_TOKEN = "8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo"
-CHAT_ID = "907465056"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo")
+CHAT_ID = os.environ.get("CHAT_ID", "907465056")
 
 TIMEFRAMES = {
     "1h":  {"interval": "1h",  "period": "3mo", "label": "1 Hour"},
@@ -35,10 +34,9 @@ COMMAND_MAP = {
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
 }
 
-# Global cache for tickers, last fetch date, and higher timeframe timer
+# Global cache for tickers and last fetch date
 CACHED_TICKERS = []
 LAST_FETCH_DATE = None
-LAST_HIGHER_TF_SCAN = 0
 
 def get_nifty500_tickers():
     global CACHED_TICKERS, LAST_FETCH_DATE
@@ -85,7 +83,7 @@ def calculate_rsi(series, period=14):
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50)  # Fallback to neutral if NaN
+    return rsi.fillna(50)
 
 def calculate_ema(series, period=50):
     return series.ewm(span=period, adjust=False).mean()
@@ -123,7 +121,6 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
 
         for t in tickers:
             try:
-                # Handle both MultiIndex and SingleIndex dataframe structures
                 if isinstance(data.columns, pd.MultiIndex):
                     if t not in data.columns.levels[0]:
                         continue
@@ -232,43 +229,17 @@ def process_user_commands(tickers):
     except Exception as e:
         print("Command check error:", e)
 
-# Background continuous listener for commands so they work instantly anytime
-def background_command_listener():
-    while True:
-        try:
-            tickers = get_nifty500_tickers()
-            process_user_commands(tickers)
-        except Exception as e:
-            pass
-        time.sleep(5)  # Check for commands every 5 seconds
-
 def run_smart_scan():
-    global LAST_HIGHER_TF_SCAN
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
     now_str = now.strftime('%d-%b %I:%M %p')
 
     current_hour = now.hour
     current_min = now.minute
-    total_mins = current_hour * 60 + current_min
-
-    is_market_active = (9 * 60 <= total_mins <= 16 * 60)
-
-    tickers = get_nifty500_tickers()
-
-    if not is_market_active:
-        print(f"[{now_str}] Market closed hours. Auto-scan paused, but commands are active...")
-        return
-
     is_morning_0900_scan = (current_hour == 9 and current_min <= 15)
 
-    timeframes_to_scan = ["1h"]
-    current_ts = time.time()
-    should_scan_higher_tf = is_morning_0900_scan or (current_ts - LAST_HIGHER_TF_SCAN >= 1800)
-
-    if should_scan_higher_tf:
-        timeframes_to_scan = ["1h", "1d", "1wk"]
-        LAST_HIGHER_TF_SCAN = current_ts
+    tickers = get_nifty500_tickers()
+    timeframes_to_scan = ["1h", "1d", "1wk"] # GitHub Action run par sabhi timeframes check honge
 
     for tf_key in timeframes_to_scan:
         cfg = TIMEFRAMES[tf_key]
@@ -339,17 +310,14 @@ def run_smart_scan():
             send_telegram_msg("\n".join(msg))
 
 if __name__ == "__main__":
-    print("Bot is running continuously with background command listener...")
-    send_telegram_msg("🤖 Bot successfully start ho gaya hai aur commands ab independent thread par active hain!")
+    print("GitHub Action triggered: Processing commands and running scan...")
+    try:
+        tickers = get_nifty500_tickers()
+        # 1. Process Telegram user commands first
+        process_user_commands(tickers)
+        # 2. Run smart scan for auto updates
+        run_smart_scan()
+        print("Execution finished successfully.")
+    except Exception as e:
+        print("Error during execution:", e)
     
-    # Start command listener in a separate background thread
-    listener_thread = threading.Thread(target=background_command_listener, daemon=True)
-    listener_thread.start()
-    
-    while True:
-        try:
-            run_smart_scan()
-        except Exception as e:
-            print("Error:", e)
-        print("Waiting 15 minutes for next scan...")
-        time.sleep(900)  # Changed from 300 seconds to 900 seconds (15 minutes)
