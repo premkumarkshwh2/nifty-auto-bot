@@ -7,8 +7,8 @@ from datetime import datetime
 import time
 import pytz
 
-# Yahan apna Bot Token aur Chat ID daal dein (Agar Colab par hain)
-BOT_TOKEN ="8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo "
+# Apna Bot Token aur Chat ID yahan daal dein
+BOT_TOKEN = "8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo"
 CHAT_ID = "907465056"
 
 TIMEFRAMES = {
@@ -84,6 +84,20 @@ def send_telegram_msg(text):
         msg_part = "\n".join(chunk)
         requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"})
 
+def get_close_series(data, ticker):
+    """Safely extract Close series handling yfinance MultiIndex structures."""
+    try:
+        if isinstance(data.columns, pd.MultiIndex):
+            if ticker in data['Close']:
+                return data['Close'][ticker].dropna()
+            return pd.Series(dtype=float)
+        else:
+            if 'Close' in data:
+                return data['Close'].dropna()
+            return pd.Series(dtype=float)
+    except Exception:
+        return pd.Series(dtype=float)
+
 def run_specific_command_scan(tickers, tf_key, mode, title):
     cfg = TIMEFRAMES[tf_key]
     data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
@@ -91,7 +105,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
 
     for t in tickers:
         try:
-            close = data[t]['Close'].dropna()
+            close = get_close_series(data, t)
             if len(close) > 50:
                 rsi_s = calculate_rsi(close, 14)
                 ema_s = calculate_ema(close, 50)
@@ -103,11 +117,11 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
                 sym = t.replace('.NS', '')
 
                 if mode == "rsi60" and curr_rsi > 60:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi, 'EMA_50': curr_ema, 'Fresh': prev_rsi <= 60})
+                    results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi, 'EMA_50': curr_ema})
                 elif mode == "rsi30" and curr_rsi < 30:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi, 'EMA_50': curr_ema, 'Fresh': prev_rsi >= 30})
+                    results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi, 'EMA_50': curr_ema})
                 elif mode == "ema50" and curr_p > curr_ema:
-                    results.append({'Symbol': sym, 'Price': curr_p, 'EMA_50': curr_ema, 'RSI': curr_rsi, 'Fresh': prev_p <= prev_ema})
+                    results.append({'Symbol': sym, 'Price': curr_p, 'EMA_50': curr_ema, 'RSI': curr_rsi})
         except Exception:
             continue
 
@@ -115,14 +129,47 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
         send_telegram_msg(f"❌ <b>{title}:</b> Koi stock nahi mila.")
         return
 
-    res_df = pd.DataFrame(results).sort_values(by='RSI', ascending=(mode == "rsi30"))
+    res_df = pd.DataFrame(results).sort_values(by='RSI' if 'RSI' in results[0] else 'Price', ascending=(mode == "rsi30"))
     
-    lines = [f"<b>{title}</b>\n<code>Symbol     | Price  | RSI  | Signal</code>\n<code>----------------------------------</code>"]
+    lines = [f"<b>{title}</b>\n<code>Symbol     | Price  | RSI/EMA | Signal</code>\n<code>----------------------------------</code>"]
     for _, r in res_df.head(40).iterrows():
+        val = r.get('RSI', r.get('EMA_50', 0))
         tag = "RSI>60 🔥" if mode == "rsi60" else ("RSI<30 ❄️" if mode == "rsi30" else ">50EMA 🚀")
-        lines.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<6} | {r['RSI']:<4} | {tag}</code>")
+        lines.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<6} | {val:<7} | {tag}</code>")
 
     send_telegram_msg("\n".join(lines))
+
+def run_full_scan_report(tickers):
+    """Executes All-in-One Report when /scan command is triggered."""
+    send_telegram_msg("🔍 <b>Full All-in-One Report Scan Shuru ho gaya hai... Kripya intezaar karein.</b>")
+    for tf_key, cfg in TIMEFRAMES.items():
+        data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
+        bo_rows, bd_rows = [], []
+        
+        for t in tickers:
+            try:
+                close = get_close_series(data, t)
+                if len(close) > 50:
+                    curr_p = round(float(close.iloc[-1]), 2)
+                    curr_r = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
+                    sym = t.replace('.NS', '')
+                    
+                    if curr_r > 60:
+                        bo_rows.append(f"<code>{sym:<10} | ₹{curr_p:<6} | {curr_r:<4} | >60 🔥</code>")
+                    elif curr_r < 30:
+                        bd_rows.append(f"<code>{sym:<10} | ₹{curr_p:<6} | {curr_r:<4} | <30 ❄️</code>")
+            except Exception:
+                continue
+        
+        if bo_rows:
+            msg = [f"📊 <b>{cfg['label']} — All-in-One RSI > 60 Report</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
+            msg.extend(bo_rows[:20])
+            send_telegram_msg("\n".join(msg))
+            
+        if bd_rows:
+            msg = [f"📊 <b>{cfg['label']} — All-in-One RSI < 30 Report</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
+            msg.extend(bd_rows[:20])
+            send_telegram_msg("\n".join(msg))
 
 def process_user_commands(tickers):
     global CHAT_ID
@@ -140,7 +187,7 @@ def process_user_commands(tickers):
             msg_date = msg.get("date", 0)
             text = msg.get("text", "").strip()
             
-            if (now_ts - msg_date) <= 600 and text.startswith("/"):
+            if (now_ts - msg_date) <= 900 and text.startswith("/"):
                 parts = text.split()
                 base_cmd = parts[0].lower().split("@")[0]
 
@@ -151,12 +198,16 @@ def process_user_commands(tickers):
                     for tf_key, cfg in TIMEFRAMES.items():
                         df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False)
                         if not df.empty and len(df) > 50:
-                            close = (df['Close'][ticker] if isinstance(df.columns, pd.MultiIndex) else df['Close']).dropna()
-                            curr_p = round(float(close.iloc[-1]), 2)
-                            r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
-                            e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
-                            reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
+                            close = get_close_series(df, ticker)
+                            if len(close) > 50:
+                                curr_p = round(float(close.iloc[-1]), 2)
+                                r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
+                                e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
+                                reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
                     send_telegram_msg("\n".join(reply))
+
+                elif base_cmd == "/scan":
+                    run_full_scan_report(tickers)
 
                 elif base_cmd in COMMAND_MAP:
                     tf_key, mode, title = COMMAND_MAP[base_cmd]
@@ -171,12 +222,12 @@ def run_smart_scan():
     
     tickers = get_nifty500_tickers()
     
-    # Sabse pehle user ki commands check karke turant jawab dega
+    # Check user commands first
     process_user_commands(tickers)
     
-    is_morning_0900_scan = (now.hour == 9 and now.minute <= 10)
+    is_morning_0900_scan = (now.hour == 9 and now.minute <= 15)
     
-    # MODE 1: MORNING 9:00 AM FULL REPORT (Sabhi timeframes ki saaf list)
+    # AUTO-UPDATE MODE 1: MORNING REPORT (9:00 AM)
     if is_morning_0900_scan:
         for tf_key, cfg in TIMEFRAMES.items():
             data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
@@ -184,7 +235,7 @@ def run_smart_scan():
             
             for t in tickers:
                 try:
-                    close = data[t]['Close'].dropna()
+                    close = get_close_series(data, t)
                     if len(close) > 50:
                         curr_p = round(float(close.iloc[-1]), 2)
                         curr_r = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
@@ -203,11 +254,11 @@ def run_smart_scan():
                 send_telegram_msg("\n".join(msg))
                 
             if bd_rows:
-                msg = [f"🌅 <b>{cfg['label']} — Morning RSI < 30 ({now_str})</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>", ]
+                msg = [f"🌅 <b>{cfg['label']} — Morning RSI < 30 ({now_str})</b>", "<code>Symbol     | Price  | RSI  | Zone</code>", "<code>----------------------------------</code>"]
                 msg.extend(bd_rows[:25])
                 send_telegram_msg("\n".join(msg))
 
-    # MODE 2: EVERY 5-MIN AUTO BREAKOUT / BREAKDOWN STATUS (9:15 ke baad lagatar)
+    # AUTO-UPDATE MODE 2: EVERY 15-MIN AUTO BREAKOUT / BREAKDOWN STATUS
     else:
         for tf_key, cfg in TIMEFRAMES.items():
             data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True)
@@ -216,7 +267,7 @@ def run_smart_scan():
             
             for t in tickers:
                 try:
-                    close = data[t]['Close'].dropna()
+                    close = get_close_series(data, t)
                     if len(close) > 50:
                         rsi = calculate_rsi(close, 14)
                         ema50 = calculate_ema(close, 50)
@@ -252,11 +303,12 @@ def run_smart_scan():
                 send_telegram_msg("\n".join(msg))
 
 if __name__ == "__main__":
-    print("Bot is running continuously...")
+    print("Bot is running continuously with 15-minute intervals...")
     while True:
         try:
             run_smart_scan()
         except Exception as e:
             print("Error:", e)
-        print("Waiting 5 minutes for next scan...")
-        time.sleep(300) # Har 5 minute mein auto-scan chalega
+        print("Waiting 15 minutes for next scan...")
+        time.sleep(900) # Har 15 minute mein auto-scan chalega
+            
