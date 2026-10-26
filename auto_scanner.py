@@ -27,9 +27,9 @@ COMMAND_MAP = {
     "/rsi60_1h": ("1h", "rsi60", "🟢 1 Hour RSI > 60"),
     "/rsi60_1d": ("1d", "rsi60", "🟢 1 Day RSI > 60"),
     "/rsi60_1w": ("1wk", "rsi60", "🟢 1 Week RSI > 60"),
-    "/rsi30_1h": ("1h", "rsi30", "🔴 1 Hour RSI < 30"),
-    "/rsi30_1d": ("1d", "rsi30", "🔴 1 Day RSI < 30"),
-    "/rsi30_1w": ("1wk", "rsi30", "🔴 1 Week RSI < 30"),
+    "/rsi30_1h": ("1h", "rsi35", "🔴 1 Hour RSI < 35 (Oversold)"),
+    "/rsi30_1d": ("1d", "rsi35", "🔴 1 Day RSI < 35 (Oversold)"),
+    "/rsi30_1w": ("1wk", "rsi35", "🔴 1 Week RSI < 35 (Oversold)"),
     "/ema50_1h": ("1h", "ema50", "📈 1 Hour Price > 50 EMA"),
     "/ema50_1d": ("1d", "ema50", "📈 1 Day Price > 50 EMA"),
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
@@ -112,7 +112,6 @@ def send_telegram_msg(text):
         requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"})
 
 def extract_close_series(data, t):
-    """Robust extractor handling all variations of yfinance MultiIndex and SingleIndex columns."""
     try:
         if isinstance(data.columns, pd.MultiIndex):
             try:
@@ -138,7 +137,6 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
         cfg = TIMEFRAMES[tf_key]
         results = []
 
-        # Single request approach to prevent timeout/delay issues
         data = yf.download(tickers, period=cfg["period"], interval=cfg["interval"], group_by='ticker', progress=False, threads=True, auto_adjust=False)
 
         for t in tickers:
@@ -161,7 +159,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
 
                     if mode == "rsi60" and curr_rsi > 60:
                         results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi})
-                    elif mode == "rsi30" and curr_rsi < 30:
+                    elif mode == "rsi35" and curr_rsi < 35:  # Updated to RSI < 35
                         results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi})
                     elif mode == "ema50" and not pd.isna(curr_ema) and curr_p > curr_ema:
                         results.append({'Symbol': sym, 'Price': curr_p, 'EMA50': curr_ema})
@@ -172,7 +170,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
             send_telegram_msg(f"❌ <b>{title}:</b> Is samay criteria match karne wala koi stock nahi mila.")
             return
 
-        if mode == "rsi30":
+        if mode == "rsi35":
             res_df = pd.DataFrame(results).sort_values(by='RSI', ascending=True)
             lines = [f"<b>{title}</b>\n<code>Symbol     | Price    | RSI</code>\n<code>------------------------------</code>"]
             for _, r in res_df.head(30).iterrows():
@@ -305,7 +303,7 @@ def run_smart_scan():
 
                     if curr_r > 60:
                         bo_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
-                    if curr_r < 30:
+                    if curr_r < 35:  # Updated to RSI < 35 for auto scan
                         bd_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
                     
                     if not pd.isna(curr_e) and curr_p > curr_e:
@@ -322,7 +320,7 @@ def run_smart_scan():
 
         if bd_list:
             bd_df = pd.DataFrame(bd_list).sort_values(by='RSI', ascending=True)
-            msg = [f"❄️ <b>{cfg['label']} — RSI < 30 Oversold Scan ({now_str})</b>", "<code>Symbol     | Price    | RSI</code>", "<code>------------------------------</code>"]
+            msg = [f"❄️ <b>{cfg['label']} — RSI < 35 Oversold Scan ({now_str})</b>", "<code>Symbol     | Price    | RSI</code>", "<code>------------------------------</code>"]
             for _, r in bd_df.head(25).iterrows():
                 msg.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | {r['RSI']:<5}</code>")
             send_telegram_msg("\n".join(msg))
@@ -348,4 +346,3 @@ if __name__ == "__main__":
             print("Error:", e)
         print("Waiting 15 minutes for next scan...")
         time.sleep(900)
-                
