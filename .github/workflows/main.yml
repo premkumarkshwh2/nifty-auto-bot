@@ -1,11 +1,11 @@
-Name: Smart Nifty 500 RSI Alert
+name: Smart Nifty 500 RSI Alert
 
 on:
   schedule:
     # 1. Subah 09:00 AM IST (03:30 UTC) -> Market Open Morning Scan
     - cron: '30 3 * * 1-5'
     
-    # 2. Market Active Hours (09:15 AM se 03:30 PM IST / 03:45 to 10:00 UTC) -> Har 15 min mein Auto Update (1h timeframe ke liye)
+    # 2. Market Active Hours (09:15 AM se 03:30 PM IST / 03:45 to 10:00 UTC) -> Har 15 min mein Auto Update
     - cron: '*/15 3-10 * * 1-5'
 
   workflow_dispatch:
