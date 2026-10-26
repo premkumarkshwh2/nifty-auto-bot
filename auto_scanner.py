@@ -35,7 +35,6 @@ COMMAND_MAP = {
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
 }
 
-# Global cache for tickers, last fetch date, and higher timeframe timer
 CACHED_TICKERS = []
 LAST_FETCH_DATE = None
 LAST_HIGHER_TF_SCAN = 0
@@ -112,6 +111,20 @@ def send_telegram_msg(text):
         msg_part = "\n".join(chunk)
         requests.post(url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"})
 
+def extract_close_series(data, t):
+    """Safely extract Close price series for a ticker from multiindex or single index yfinance download."""
+    try:
+        if isinstance(data.columns, pd.MultiIndex):
+            if t in data.columns.levels[1]:
+                s = data[('Close', t)].dropna()
+                return s
+        else:
+            if 'Close' in data.columns:
+                return data['Close'].dropna()
+    except Exception:
+        pass
+    return pd.Series(dtype=float)
+
 def run_specific_command_scan(tickers, tf_key, mode, title):
     try:
         send_telegram_msg(f"⏳ <b>{title}</b> ke liye scan shuru ho gaya hai, kripya 10-15 seconds intezaar karein...")
@@ -122,8 +135,8 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
 
         for t in tickers:
             try:
-                close = data[t]['Close'].dropna() if isinstance(data.columns, pd.MultiIndex) else data['Close'].dropna()
-                if len(close) > 50:
+                close = extract_close_series(data, t)
+                if len(close) > 30:
                     rsi_s = calculate_rsi(close, 14)
                     ema_s = calculate_ema(close, 50)
                     
@@ -135,14 +148,14 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
                     curr_ema = round(float(ema_s.iloc[-1]), 2)
                     sym = t.replace('.NS', '')
 
-                    if pd.isna(curr_rsi) or pd.isna(curr_ema):
+                    if pd.isna(curr_rsi):
                         continue
 
                     if mode == "rsi60" and curr_rsi > 60:
                         results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi})
                     elif mode == "rsi30" and curr_rsi < 30:
                         results.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_rsi})
-                    elif mode == "ema50" and curr_p > curr_ema:
+                    elif mode == "ema50" and not pd.isna(curr_ema) and curr_p > curr_ema:
                         results.append({'Symbol': sym, 'Price': curr_p, 'EMA50': curr_ema})
             except Exception:
                 continue
@@ -198,15 +211,13 @@ def process_user_commands(tickers):
                     for tf_key, cfg in TIMEFRAMES.items():
                         try:
                             df = yf.download(ticker, period=cfg["period"], interval=cfg["interval"], progress=False, auto_adjust=False)
-                            if not df.empty:
-                                close = (df['Close'][ticker] if isinstance(df.columns, pd.MultiIndex) else df['Close']).dropna()
-                                if len(close) > 50:
-                                    curr_p = round(float(close.iloc[-1]), 2)
-                                    r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
-                                    e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
-                                    reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
+                            close = extract_close_series(df, ticker)
+                            if len(close) > 30:
+                                curr_p = round(float(close.iloc[-1]), 2)
+                                r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
+                                e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
+                                reply.append(f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} | {e_val}</code>")
                         except Exception as tf_err:
-                            print(f"Error checking {tf_key} for {sym}: {tf_err}")
                             continue
                     
                     if len(reply) > 1:
@@ -244,7 +255,6 @@ def run_smart_scan():
     total_mins = current_hour * 60 + current_min
 
     is_market_active = (9 * 60 <= total_mins <= 16 * 60)
-
     tickers = get_nifty500_tickers()
 
     if not is_market_active:
@@ -268,8 +278,8 @@ def run_smart_scan():
 
         for t in tickers:
             try:
-                close = data[t]['Close'].dropna() if isinstance(data.columns, pd.MultiIndex) else data['Close'].dropna()
-                if len(close) > 50:
+                close = extract_close_series(data, t)
+                if len(close) > 30:
                     rsi = calculate_rsi(close, 14)
                     ema50 = calculate_ema(close, 50)
 
@@ -278,54 +288,37 @@ def run_smart_scan():
                     curr_e = round(float(ema50.iloc[-1]), 2)
                     sym = t.replace('.NS', '')
 
-                    if pd.isna(curr_r) or pd.isna(curr_e):
+                    if pd.isna(curr_r):
                         continue
 
-                    if is_morning_0900_scan:
-                        if curr_r > 60:
-                            bo_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
-                        elif curr_r < 30:
-                            bd_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
-                    else:
-                        prev_r = round(float(rsi.iloc[-2]), 1)
-                        prev_p = round(float(close.iloc[-2]), 2)
-                        prev_e = round(float(ema50.iloc[-2]), 2)
-
-                        if curr_r > 60 and prev_r <= 60:
-                            bo_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
-                        
-                        # --- FIX: Improved RSI < 30 Auto-Scan Condition ---
-                        # Yeh ab fresh breakdown (curr_r < 30 aur prev_r >= 30) ke sath-sath 
-                        # agar stock oversold zone mein enter hua hai toh ensure karega.
-                        if (curr_r < 30 and prev_r >= 30) or (curr_r < 30 and len(bd_list) < 25):
-                            # Duplicate entry se bachne ke liye check karein
-                            if not any(d['Symbol'] == sym for d in bd_list):
-                                bd_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
-
-                        if curr_p > curr_e and prev_p <= prev_e:
-                            ema_list.append({'Symbol': sym, 'Price': curr_p, 'EMA50': curr_e})
+                    # Auto-scan logic for RSI > 60 and RSI < 30
+                    if curr_r > 60:
+                        bo_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
+                    if curr_r < 30:
+                        bd_list.append({'Symbol': sym, 'Price': curr_p, 'RSI': curr_r})
+                    
+                    if not pd.isna(curr_e) and curr_p > curr_e:
+                        ema_list.append({'Symbol': sym, 'Price': curr_p, 'EMA50': curr_e})
             except Exception:
                 continue
 
         if bo_list:
             bo_df = pd.DataFrame(bo_list).sort_values(by='RSI', ascending=False)
-            title_prefix = "Morning RSI > 60" if is_morning_0900_scan else "Fresh RSI > 60 Breakout"
-            msg = [f"🔥 <b>{cfg['label']} — {title_prefix} ({now_str})</b>", "<code>Symbol     | Price    | RSI</code>", "<code>------------------------------</code>"]
+            msg = [f"🔥 <b>{cfg['label']} — RSI > 60 Scan ({now_str})</b>", "<code>Symbol     | Price    | RSI</code>", "<code>------------------------------</code>"]
             for _, r in bo_df.head(25).iterrows():
                 msg.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | {r['RSI']:<5}</code>")
             send_telegram_msg("\n".join(msg))
 
         if bd_list:
             bd_df = pd.DataFrame(bd_list).sort_values(by='RSI', ascending=True)
-            title_prefix = "Morning RSI < 30" if is_morning_0900_scan else "Fresh RSI < 30 Breakdown"
-            msg = [f"❄️ <b>{cfg['label']} — {title_prefix} ({now_str})</b>", "<code>Symbol     | Price    | RSI</code>", "<code>------------------------------</code>"]
+            msg = [f"❄️ <b>{cfg['label']} — RSI < 30 Oversold Scan ({now_str})</b>", "<code>Symbol     | Price    | RSI</code>", "<code>------------------------------</code>"]
             for _, r in bd_df.head(25).iterrows():
                 msg.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | {r['RSI']:<5}</code>")
             send_telegram_msg("\n".join(msg))
 
         if ema_list and not is_morning_0900_scan:
             ema_df = pd.DataFrame(ema_list).sort_values(by='Price', ascending=False)
-            msg = [f"🚀 <b>{cfg['label']} — Fresh Price > 50 EMA Crossover ({now_str})</b>", "<code>Symbol     | Price    | 50 EMA</code>", "<code>------------------------------</code>"]
+            msg = [f"🚀 <b>{cfg['label']} — Price > 50 EMA ({now_str})</b>", "<code>Symbol     | Price    | 50 EMA</code>", "<code>------------------------------</code>"]
             for _, r in ema_df.head(25).iterrows():
                 msg.append(f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} | ₹{r['EMA50']:<6}</code>")
             send_telegram_msg("\n".join(msg))
@@ -344,4 +337,4 @@ if __name__ == "__main__":
             print("Error:", e)
         print("Waiting 5 minutes for next scan...")
         time.sleep(300)
-                
+    
