@@ -3,9 +3,9 @@ name: RSI Telegram Bot Scanner
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # Isse aap GitHub par manually bhi 'Run workflow' click karke chala sakte hain
+  workflow_dispatch: # Isse aap GitHub par manually bhi run kar sakte hain
   schedule:
-    - cron: '*/15 * * * *' # Har 15 minute mein automatically run karne ke liye
+    - cron: '*/15 * * * *' # Har 15 minute mein automatically run hoga
 
 jobs:
   build-and-run:
