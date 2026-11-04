@@ -14,7 +14,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 logger = logging.getLogger("yfinance")
 logger.setLevel(logging.CRITICAL)
 
-BOT_TOKEN = "8855321186:AAE6pMGrgT5VS9DHip3z6otENLPwRYRM4lo"
+BOT_TOKEN = "7965983989:AAGtgF6o3WjuiRpADcEjDrECJqdL9O6MJls"
 CHAT_ID = "907465056"
 
 TIMEFRAMES = {
