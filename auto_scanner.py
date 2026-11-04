@@ -23,13 +23,14 @@ TIMEFRAMES = {
     "1wk": {"interval": "1wk", "period": "2y", "label": "1 Week"},
 }
 
+# Yahan '<' ki jagah '≤' use kiya gaya hai taaki Telegram HTML parser error na aaye
 COMMAND_MAP = {
     "/rsi60_1h": ("1h", "rsi60", "🟢 1 Hour RSI > 60"),
     "/rsi60_1d": ("1d", "rsi60", "🟢 1 Day RSI > 60"),
     "/rsi60_1w": ("1wk", "rsi60", "🟢 1 Week RSI > 60"),
-    "/rsi30_1h": ("1h", "rsi30", "🔴 1 Hour RSI <= 30 (Oversold)"),
-    "/rsi30_1d": ("1d", "rsi30", "🔴 1 Day RSI <= 30 (Oversold)"),
-    "/rsi30_1w": ("1wk", "rsi30", "🔴 1 Week RSI <= 30 (Oversold)"),
+    "/rsi30_1h": ("1h", "rsi30", "🔴 1 Hour RSI ≤ 30 (Oversold)"),
+    "/rsi30_1d": ("1d", "rsi30", "🔴 1 Day RSI ≤ 30 (Oversold)"),
+    "/rsi30_1w": ("1wk", "rsi30", "🔴 1 Week RSI ≤ 30 (Oversold)"),
     "/ema50_1h": ("1h", "ema50", "📈 1 Hour Price > 50 EMA"),
     "/ema50_1d": ("1d", "ema50", "📈 1 Day Price > 50 EMA"),
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
@@ -90,7 +91,7 @@ def get_nifty500_tickers():
 
   if CACHED_TICKERS:
     return CACHED_TICKERS
-  raise Exception("Nifty 500 list kisi bhi source se fetch nahi ho payi.")
+  raise Exception("Nifty 500 list kisi bhi source से fetch nahi ho payi.")
 
 
 def calculate_rsi(series, period=14):
@@ -455,7 +456,7 @@ def run_smart_scan():
     if new_bd_list:
       bd_df = pd.DataFrame(new_bd_list).sort_values(by="RSI", ascending=True)
       msg = [
-          f"❄️ <b>{cfg['label']} — New RSI <= 30 Breakdown ({now_str})</b>",
+          f"❄️ <b>{cfg['label']} — New RSI ≤ 30 Breakdown ({now_str})</b>",
           "<code>Symbol     | Price    | RSI</code>",
           "<code>------------------------------</code>",
       ]
@@ -484,8 +485,8 @@ def run_smart_scan():
 if __name__ == "__main__":
   print("Bot is running continuously with background command listener...")
   send_telegram_msg(
-      "🤖 Bot successfully start ho gaya hai aur data extraction fix kar diya"
-      " gaya hai!"
+      "🤖 Bot successfully start ho gaya hai aur RSI 30 command fix kar di"
+      " gayi hai!"
   )
 
   listener_thread = threading.Thread(
@@ -500,4 +501,4 @@ if __name__ == "__main__":
       print("Error:", e)
     print("Waiting 15 minutes for next scan...")
     time.sleep(900)
-    
+            
