@@ -27,9 +27,9 @@ COMMAND_MAP = {
     "/rsi60_1h": ("1h", "rsi60", "🟢 1 Hour RSI > 60"),
     "/rsi60_1d": ("1d", "rsi60", "🟢 1 Day RSI > 60"),
     "/rsi60_1w": ("1wk", "rsi60", "🟢 1 Week RSI > 60"),
-    "/rsi30_1h": ("1h", "rsi30", "🔴 1 Hour RSI < 30"),
-    "/rsi30_1d": ("1d", "rsi30", "🔴 1 Day RSI < 30"),
-    "/rsi30_1w": ("1wk", "rsi30", "🔴 1 Week RSI < 30"),
+    "/rsi30_1h": ("1h", "rsi30", "🔴 1 Hour RSI <= 30 (Oversold)"),
+    "/rsi30_1d": ("1d", "rsi30", "🔴 1 Day RSI <= 30 (Oversold)"),
+    "/rsi30_1w": ("1wk", "rsi30", "🔴 1 Week RSI <= 30 (Oversold)"),
     "/ema50_1h": ("1h", "ema50", "📈 1 Hour Price > 50 EMA"),
     "/ema50_1d": ("1d", "ema50", "📈 1 Day Price > 50 EMA"),
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
@@ -39,7 +39,6 @@ CACHED_TICKERS = []
 LAST_FETCH_DATE = None
 LAST_HIGHER_TF_SCAN = 0
 
-# Auto-scan ke liye previous states track karne ki dictionary
 PREVIOUS_SCAN_STATES = {}
 
 
@@ -165,7 +164,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
   try:
     send_telegram_msg(
         f"⏳ <b>{title}</b> ke liye scan shuru ho gaya hai, kripya 10-15 seconds"
-        " intezaار karein..."
+        " intezaar karein..."
     )
     cfg = TIMEFRAMES[tf_key]
     results = []
@@ -200,7 +199,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
 
           if mode == "rsi60" and curr_rsi > 60:
             results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
-          elif mode == "rsi30" and curr_rsi < 30:
+          elif mode == "rsi30" and curr_rsi <= 30:
             results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
           elif mode == "ema50" and not pd.isna(curr_ema) and curr_p > curr_ema:
             results.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_ema})
@@ -395,7 +394,7 @@ def run_smart_scan():
 
           if curr_r > 60:
             bo_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
-          if curr_r < 30:
+          if curr_r <= 30:
             bd_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
 
           if not pd.isna(curr_e) and curr_p > curr_e:
@@ -403,7 +402,6 @@ def run_smart_scan():
       except Exception:
         continue
 
-    # State initialization for first run to avoid spamming
     if tf_key not in PREVIOUS_SCAN_STATES:
       PREVIOUS_SCAN_STATES[tf_key] = {
           "rsi60": {item["Symbol"] for item in bo_list},
@@ -412,7 +410,6 @@ def run_smart_scan():
       }
       continue
 
-    # Filter only NEW stocks that entered the criteria now
     prev_bo = PREVIOUS_SCAN_STATES[tf_key]["rsi60"]
     prev_bd = PREVIOUS_SCAN_STATES[tf_key]["rsi30"]
     prev_ema = PREVIOUS_SCAN_STATES[tf_key]["ema50"]
@@ -427,7 +424,6 @@ def run_smart_scan():
         item for item in ema_list if item["Symbol"] not in prev_ema
     ]
 
-    # Update state for next check
     PREVIOUS_SCAN_STATES[tf_key]["rsi60"] = current_bo_set
     PREVIOUS_SCAN_STATES[tf_key]["rsi30"] = current_bd_set
     PREVIOUS_SCAN_STATES[tf_key]["ema50"] = current_ema_set
@@ -449,7 +445,7 @@ def run_smart_scan():
     if new_bd_list:
       bd_df = pd.DataFrame(new_bd_list).sort_values(by="RSI", ascending=True)
       msg = [
-          f"❄️ <b>{cfg['label']} — New RSI < 30 Breakdown ({now_str})</b>",
+          f"❄️ <b>{cfg['label']} — New RSI <= 30 Breakdown ({now_str})</b>",
           "<code>Symbol     | Price    | RSI</code>",
           "<code>------------------------------</code>",
       ]
@@ -478,8 +474,7 @@ def run_smart_scan():
 if __name__ == "__main__":
   print("Bot is running continuously with background command listener...")
   send_telegram_msg(
-      "🤖 Bot successfully start ho gaya hai aur naye breakouts/breakdowns track"
-      " honge!"
+      "🤖 Bot successfully start ho gaya hai aur RSI <= 30 tracking active hai!"
   )
 
   listener_thread = threading.Thread(
@@ -494,3 +489,4 @@ if __name__ == "__main__":
       print("Error:", e)
     print("Waiting 15 minutes for next scan...")
     time.sleep(900)
+    
