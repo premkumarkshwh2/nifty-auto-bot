@@ -144,12 +144,18 @@ def extract_close_series(data, t):
     if isinstance(data.columns, pd.MultiIndex):
       try:
         if t in data.columns.get_level_values(0):
-          return data[t]["Close"].dropna()
+          sub = data[t]
+          if isinstance(sub, pd.DataFrame) and "Close" in sub.columns:
+            return sub["Close"].dropna()
       except Exception:
         pass
       try:
         if t in data.columns.get_level_values(1):
-          return data["Close"][t].dropna()
+          sub = data.xs(t, level=1, axis=1)
+          if isinstance(sub, pd.DataFrame) and "Close" in sub.columns:
+            return sub["Close"].dropna()
+          elif isinstance(sub, pd.Series):
+            return sub.dropna()
       except Exception:
         pass
     else:
@@ -182,27 +188,29 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
     for t in tickers:
       try:
         close = extract_close_series(data, t)
-        if len(close) > 30:
-          rsi_s = calculate_rsi(close, 14)
-          ema_s = calculate_ema(close, 50)
+        if close.empty or len(close) <= 30:
+          continue
 
-          if rsi_s.empty:
-            continue
+        rsi_s = calculate_rsi(close, 14)
+        ema_s = calculate_ema(close, 50)
 
-          curr_p = round(float(close.iloc[-1]), 2)
-          curr_rsi = round(float(rsi_s.iloc[-1]), 1)
-          curr_ema = round(float(ema_s.iloc[-1]), 2) if not ema_s.empty else 0
-          sym = t.replace(".NS", "")
+        if rsi_s.empty:
+          continue
 
-          if pd.isna(curr_rsi):
-            continue
+        curr_p = round(float(close.iloc[-1]), 2)
+        curr_rsi = round(float(rsi_s.iloc[-1]), 1)
+        curr_ema = round(float(ema_s.iloc[-1]), 2) if not ema_s.empty else 0
+        sym = t.replace(".NS", "")
 
-          if mode == "rsi60" and curr_rsi > 60:
-            results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
-          elif mode == "rsi30" and curr_rsi <= 30:
-            results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
-          elif mode == "ema50" and not pd.isna(curr_ema) and curr_p > curr_ema:
-            results.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_ema})
+        if pd.isna(curr_rsi):
+          continue
+
+        if mode == "rsi60" and curr_rsi > 60:
+          results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
+        elif mode == "rsi30" and curr_rsi <= 30:
+          results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
+        elif mode == "ema50" and not pd.isna(curr_ema) and curr_p > curr_ema:
+          results.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_ema})
       except Exception:
         continue
 
@@ -380,25 +388,27 @@ def run_smart_scan():
     for t in tickers:
       try:
         close = extract_close_series(data, t)
-        if len(close) > 30:
-          rsi = calculate_rsi(close, 14)
-          ema50 = calculate_ema(close, 50)
+        if close.empty or len(close) <= 30:
+          continue
 
-          curr_p = round(float(close.iloc[-1]), 2)
-          curr_r = round(float(rsi.iloc[-1]), 1)
-          curr_e = round(float(ema50.iloc[-1]), 2)
-          sym = t.replace(".NS", "")
+        rsi = calculate_rsi(close, 14)
+        ema50 = calculate_ema(close, 50)
 
-          if pd.isna(curr_r):
-            continue
+        curr_p = round(float(close.iloc[-1]), 2)
+        curr_r = round(float(rsi.iloc[-1]), 1)
+        curr_e = round(float(ema50.iloc[-1]), 2)
+        sym = t.replace(".NS", "")
 
-          if curr_r > 60:
-            bo_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
-          if curr_r <= 30:
-            bd_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
+        if pd.isna(curr_r):
+          continue
 
-          if not pd.isna(curr_e) and curr_p > curr_e:
-            ema_list.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_e})
+        if curr_r > 60:
+          bo_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
+        if curr_r <= 30:
+          bd_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
+
+        if not pd.isna(curr_e) and curr_p > curr_e:
+          ema_list.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_e})
       except Exception:
         continue
 
@@ -474,7 +484,8 @@ def run_smart_scan():
 if __name__ == "__main__":
   print("Bot is running continuously with background command listener...")
   send_telegram_msg(
-      "🤖 Bot successfully start ho gaya hai aur RSI <= 30 tracking active hai!"
+      "🤖 Bot successfully start ho gaya hai aur data extraction fix kar diya"
+      " gaya hai!"
   )
 
   listener_thread = threading.Thread(
