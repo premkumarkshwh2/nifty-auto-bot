@@ -39,6 +39,9 @@ CACHED_TICKERS = []
 LAST_FETCH_DATE = None
 LAST_HIGHER_TF_SCAN = 0
 
+# Auto-scan ke liye previous states track karne ki dictionary
+PREVIOUS_SCAN_STATES = {}
+
 
 def get_nifty500_tickers():
   global CACHED_TICKERS, LAST_FETCH_DATE
@@ -162,7 +165,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
   try:
     send_telegram_msg(
         f"⏳ <b>{title}</b> ke liye scan shuru ho gaya hai, kripya 10-15 seconds"
-        " intezaar karein..."
+        " intezaار karein..."
     )
     cfg = TIMEFRAMES[tf_key]
     results = []
@@ -330,7 +333,7 @@ def background_command_listener():
 
 
 def run_smart_scan():
-  global LAST_HIGHER_TF_SCAN
+  global LAST_HIGHER_TF_SCAN, PREVIOUS_SCAN_STATES
   ist = pytz.timezone("Asia/Kolkata")
   now = datetime.now(ist)
   now_str = now.strftime("%d-%b %I:%M %p")
@@ -400,10 +403,39 @@ def run_smart_scan():
       except Exception:
         continue
 
-    if bo_list:
-      bo_df = pd.DataFrame(bo_list).sort_values(by="RSI", ascending=False)
+    # State initialization for first run to avoid spamming
+    if tf_key not in PREVIOUS_SCAN_STATES:
+      PREVIOUS_SCAN_STATES[tf_key] = {
+          "rsi60": {item["Symbol"] for item in bo_list},
+          "rsi30": {item["Symbol"] for item in bd_list},
+          "ema50": {item["Symbol"] for item in ema_list},
+      }
+      continue
+
+    # Filter only NEW stocks that entered the criteria now
+    prev_bo = PREVIOUS_SCAN_STATES[tf_key]["rsi60"]
+    prev_bd = PREVIOUS_SCAN_STATES[tf_key]["rsi30"]
+    prev_ema = PREVIOUS_SCAN_STATES[tf_key]["ema50"]
+
+    current_bo_set = {item["Symbol"] for item in bo_list}
+    current_bd_set = {item["Symbol"] for item in bd_list}
+    current_ema_set = {item["Symbol"] for item in ema_list}
+
+    new_bo_list = [item for item in bo_list if item["Symbol"] not in prev_bo]
+    new_bd_list = [item for item in bd_list if item["Symbol"] not in prev_bd]
+    new_ema_list = [
+        item for item in ema_list if item["Symbol"] not in prev_ema
+    ]
+
+    # Update state for next check
+    PREVIOUS_SCAN_STATES[tf_key]["rsi60"] = current_bo_set
+    PREVIOUS_SCAN_STATES[tf_key]["rsi30"] = current_bd_set
+    PREVIOUS_SCAN_STATES[tf_key]["ema50"] = current_ema_set
+
+    if new_bo_list:
+      bo_df = pd.DataFrame(new_bo_list).sort_values(by="RSI", ascending=False)
       msg = [
-          f"🔥 <b>{cfg['label']} — RSI > 60 Scan ({now_str})</b>",
+          f"🔥 <b>{cfg['label']} — New RSI > 60 Breakout ({now_str})</b>",
           "<code>Symbol     | Price    | RSI</code>",
           "<code>------------------------------</code>",
       ]
@@ -414,10 +446,10 @@ def run_smart_scan():
         )
       send_telegram_msg("\n".join(msg))
 
-    if bd_list:
-      bd_df = pd.DataFrame(bd_list).sort_values(by="RSI", ascending=True)
+    if new_bd_list:
+      bd_df = pd.DataFrame(new_bd_list).sort_values(by="RSI", ascending=True)
       msg = [
-          f"❄️ <b>{cfg['label']} — RSI < 30 Oversold Scan ({now_str})</b>",
+          f"❄️ <b>{cfg['label']} — New RSI < 30 Breakdown ({now_str})</b>",
           "<code>Symbol     | Price    | RSI</code>",
           "<code>------------------------------</code>",
       ]
@@ -428,10 +460,10 @@ def run_smart_scan():
         )
       send_telegram_msg("\n".join(msg))
 
-    if ema_list and not is_morning_0900_scan:
-      ema_df = pd.DataFrame(ema_list).sort_values(by="Price", ascending=False)
+    if new_ema_list and not is_morning_0900_scan:
+      ema_df = pd.DataFrame(new_ema_list).sort_values(by="Price", ascending=False)
       msg = [
-          f"🚀 <b>{cfg['label']} — Price > 50 EMA ({now_str})</b>",
+          f"🚀 <b>{cfg['label']} — New Price > 50 EMA ({now_str})</b>",
           "<code>Symbol     | Price    | 50 EMA</code>",
           "<code>------------------------------</code>",
       ]
@@ -446,8 +478,8 @@ def run_smart_scan():
 if __name__ == "__main__":
   print("Bot is running continuously with background command listener...")
   send_telegram_msg(
-      "🤖 Bot successfully start ho gaya hai aur commands ab independent"
-      " thread par active hain!"
+      "🤖 Bot successfully start ho gaya hai aur naye breakouts/breakdowns track"
+      " honge!"
   )
 
   listener_thread = threading.Thread(
