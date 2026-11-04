@@ -23,14 +23,13 @@ TIMEFRAMES = {
     "1wk": {"interval": "1wk", "period": "2y", "label": "1 Week"},
 }
 
-# Yahan rsi35 kar diya gaya hai taaki zyada stocks easily match ho sakein
 COMMAND_MAP = {
     "/rsi60_1h": ("1h", "rsi60", "🟢 1 Hour RSI > 60"),
     "/rsi60_1d": ("1d", "rsi60", "🟢 1 Day RSI > 60"),
     "/rsi60_1w": ("1wk", "rsi60", "🟢 1 Week RSI > 60"),
-    "/rsi30_1h": ("1h", "rsi35", "🔴 1 Hour RSI < 35 (Oversold)"),
-    "/rsi30_1d": ("1d", "rsi35", "🔴 1 Day RSI < 35 (Oversold)"),
-    "/rsi30_1w": ("1wk", "rsi35", "🔴 1 Week RSI < 35 (Oversold)"),
+    "/rsi30_1h": ("1h", "rsi30", "🔴 1 Hour RSI < 30 (Oversold)"),
+    "/rsi30_1d": ("1d", "rsi30", "🔴 1 Day RSI < 30 (Oversold)"),
+    "/rsi30_1w": ("1wk", "rsi30", "🔴 1 Week RSI < 30 (Oversold)"),
     "/ema50_1h": ("1h", "ema50", "📈 1 Hour Price > 50 EMA"),
     "/ema50_1d": ("1d", "ema50", "📈 1 Day Price > 50 EMA"),
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
@@ -198,7 +197,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
 
           if mode == "rsi60" and curr_rsi > 60:
             results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
-          elif mode == "rsi35" and curr_rsi < 35:
+          elif mode == "rsi30" and curr_rsi < 30:
             results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
           elif mode == "ema50" and not pd.isna(curr_ema) and curr_p > curr_ema:
             results.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_ema})
@@ -212,7 +211,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
       )
       return
 
-    if mode == "rsi35":
+    if mode == "rsi30":
       res_df = pd.DataFrame(results).sort_values(by="RSI", ascending=True)
       lines = [
           f"<b>{title}</b>\n<code>Symbol     | Price    |"
@@ -393,7 +392,7 @@ def run_smart_scan():
 
           if curr_r > 60:
             bo_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
-          if curr_r < 35:
+          if curr_r < 30:
             bd_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
 
           if not pd.isna(curr_e) and curr_p > curr_e:
@@ -418,7 +417,7 @@ def run_smart_scan():
     if bd_list:
       bd_df = pd.DataFrame(bd_list).sort_values(by="RSI", ascending=True)
       msg = [
-          f"❄️ <b>{cfg['label']} — RSI < 35 Oversold Scan ({now_str})</b>",
+          f"❄️ <b>{cfg['label']} — RSI < 30 Oversold Scan ({now_str})</b>",
           "<code>Symbol     | Price    | RSI</code>",
           "<code>------------------------------</code>",
       ]
@@ -463,4 +462,3 @@ if __name__ == "__main__":
       print("Error:", e)
     print("Waiting 15 minutes for next scan...")
     time.sleep(900)
-    
