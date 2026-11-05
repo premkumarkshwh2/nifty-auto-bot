@@ -1,57 +1,21 @@
-"""
-Nifty 500 RSI / EMA Telegram Scanner Bot (refactored)
-
-Setup:
-    pip install yfinance pandas requests pytz
-    export BOT_TOKEN="naya_token_botfather_se"
-    export CHAT_ID="907465056"
-    python nifty_bot.py
-"""
-
-import html
 import io
-import json
 import logging
 import os
 import threading
 import time
-import warnings
-from datetime import datetime
-
+from datetime import date, datetime
 import pandas as pd
 import pytz
 import requests
+import warnings
 import yfinance as yf
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
-logging.getLogger("yfinance").setLevel(logging.CRITICAL)
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
-log = logging.getLogger("bot")
+logger = logging.getLogger("yfinance")
+logger.setLevel(logging.CRITICAL)
 
-# ───────────────────────── CONFIG ─────────────────────────
-BOT_TOKEN = os.environ["7965983989:AAGtgF6o3WjuiRpADcEjDrECJqdL9O6MJls"]
-CHAT_ID = str(os.environ["907465056"])  # sirf yahi chat commands de sakti hai
-
-IST = pytz.timezone("Asia/Kolkata")
-MARKET_OPEN = (9, 15)
-MARKET_CLOSE = (15, 30)
-
-RSI_PERIOD = 14
-RSI_HIGH = 60
-RSI_LOW = 30
-EMA_PERIOD = 50
-MIN_CANDLES = 30
-DROP_LAST_CANDLE = False  # True = sirf complete candles use karo
-
-BATCH_SIZE = 100
-MAX_ROWS = 30
-SCAN_INTERVAL = 900          # 15 min
-HIGHER_TF_INTERVAL = 1800    # 30 min
-SCAN_CACHE_TTL = 300         # auto-scan cache (sec)
-CMD_CACHE_TTL = 600          # command cache (sec)
-STATE_FILE = "scan_state.json"
+BOT_TOKEN = "7965983989:AAGtgF6o3WjuiRpADcEjDrECJqdL9O6MJls"
+CHAT_ID = "907465056"
 
 TIMEFRAMES = {
     "1h": {"interval": "1h", "period": "3mo", "label": "1 Hour"},
@@ -59,439 +23,482 @@ TIMEFRAMES = {
     "1wk": {"interval": "1wk", "period": "2y", "label": "1 Week"},
 }
 
-# mode -> (title, filter fn, sort column, ascending, value column)
-MODES = {
-    "rsi60": {
-        "title": f"RSI > {RSI_HIGH}",
-        "icon": "🟢",
-        "test": lambda r: r["rsi"] > RSI_HIGH,
-        "sort": "rsi", "asc": False, "col": "RSI", "val": "rsi",
-    },
-    "rsi30": {
-        "title": f"RSI ≤ {RSI_LOW} (Oversold)",
-        "icon": "🔴",
-        "test": lambda r: r["rsi"] <= RSI_LOW,
-        "sort": "rsi", "asc": True, "col": "RSI", "val": "rsi",
-    },
-    "ema50": {
-        "title": f"Price > {EMA_PERIOD} EMA",
-        "icon": "📈",
-        "test": lambda r: r["price"] > r["ema"],
-        "sort": "price", "asc": False, "col": "EMA50", "val": "ema",
-    },
-}
-
-SUFFIX = {"1h": "1h", "1d": "1d", "1wk": "1w"}
+# Yahan '<' ki jagah '≤' use kiya gaya hai taaki Telegram HTML parser error na aaye
 COMMAND_MAP = {
-    f"/{mode}_{SUFFIX[tf]}": (tf, mode)
-    for mode in MODES
-    for tf in TIMEFRAMES
+    "/rsi60_1h": ("1h", "rsi60", "🟢 1 Hour RSI > 60"),
+    "/rsi60_1d": ("1d", "rsi60", "🟢 1 Day RSI > 60"),
+    "/rsi60_1w": ("1wk", "rsi60", "🟢 1 Week RSI > 60"),
+    "/rsi30_1h": ("1h", "rsi30", "🔴 1 Hour RSI ≤ 30 (Oversold)"),
+    "/rsi30_1d": ("1d", "rsi30", "🔴 1 Day RSI ≤ 30 (Oversold)"),
+    "/rsi30_1w": ("1wk", "rsi30", "🔴 1 Week RSI ≤ 30 (Oversold)"),
+    "/ema50_1h": ("1h", "ema50", "📈 1 Hour Price > 50 EMA"),
+    "/ema50_1d": ("1d", "ema50", "📈 1 Day Price > 50 EMA"),
+    "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
 }
 
+CACHED_TICKERS = []
+LAST_FETCH_DATE = None
+LAST_HIGHER_TF_SCAN = 0
 
-# ───────────────────────── TELEGRAM ─────────────────────────
-API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-
-
-def tg_send(text):
-    """Text bhejo (HTML). Retry + timeout ke saath."""
-    for attempt in range(3):
-        try:
-            r = requests.post(
-                f"{API}/sendMessage",
-                json={
-                    "chat_id": CHAT_ID,
-                    "text": text,
-                    "parse_mode": "HTML",
-                },
-                timeout=10,
-            )
-            if r.status_code == 200:
-                return True
-            log.warning("Telegram %s: %s", r.status_code, r.text[:200])
-            if r.status_code == 429:
-                time.sleep(r.json().get("parameters", {}).get("retry_after", 3))
-            else:
-                return False
-        except requests.RequestException as e:
-            log.warning("Telegram send error: %s", e)
-            time.sleep(2)
-    return False
+PREVIOUS_SCAN_STATES = {}
 
 
-def tg_table(title, header, rows, limit=MAX_ROWS):
-    """Table ko chunks me bhejo; har chunk apna <pre> block khud band karta hai."""
-    rows = rows[:limit]
-    sep = "-" * len(header)
-    chunk, size = [], 0
-    first = True
-    for row in rows + [None]:
-        if row is None or size + len(row) > 3000:
-            if chunk:
-                head = f"<b>{html.escape(title)}</b>\n" if first else ""
-                body = "\n".join([header, sep] + chunk)
-                tg_send(f"{head}<pre>{html.escape(body)}</pre>")
-                first = False
-            chunk, size = [], 0
-        if row is not None:
-            chunk.append(row)
-            size += len(row) + 1
+def get_nifty500_tickers():
+  global CACHED_TICKERS, LAST_FETCH_DATE
+  today = date.today()
+  if CACHED_TICKERS and LAST_FETCH_DATE == today:
+    return CACHED_TICKERS
 
+  urls = [
+      "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv",
+      "https://raw.githubusercontent.com/anuj-singh-01/nse-stocks-list/main/ind_nifty500list.csv",
+      "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+      "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+  ]
 
-# ───────────────────────── TICKERS ─────────────────────────
-_tickers = {"list": [], "day": None}
-_tickers_lock = threading.Lock()
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+          " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      ),
+      "Accept-Language": "en-US,en;q=0.9",
+      "Referer": "https://www.google.com/",
+  }
 
-TICKER_URLS = [
-    "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv",
-    "https://raw.githubusercontent.com/anuj-singh-01/nse-stocks-list/main/ind_nifty500list.csv",
-    "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
-    "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
-]
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.google.com/",
-}
-
-
-def get_tickers():
-    today = datetime.now(IST).date()
-    with _tickers_lock:
-        if _tickers["list"] and _tickers["day"] == today:
-            return _tickers["list"]
-        for url in TICKER_URLS:
-            try:
-                res = requests.get(url, headers=HEADERS, timeout=15)
-                if res.status_code != 200 or "symbol" not in res.text.lower():
-                    continue
-                df = pd.read_csv(io.StringIO(res.text))
-                col = next(
-                    (c for c in df.columns if c.strip().lower() == "symbol"),
-                    df.columns[0],
-                )
-                tickers = [
-                    f"{str(s).strip()}.NS"
-                    for s in df[col].dropna()
-                    if "NIFTY" not in str(s).upper()
-                ]
-                if len(tickers) > 100:
-                    _tickers.update(list=tickers, day=today)
-                    log.info("Loaded %d tickers", len(tickers))
-                    return tickers
-            except Exception as e:
-                log.warning("Ticker source failed (%s): %s", url, e)
-        if _tickers["list"]:
-            return _tickers["list"]
-        raise RuntimeError("Nifty 500 list kisi bhi source se fetch nahi hui.")
-
-
-# ───────────────────────── INDICATORS ─────────────────────────
-def calc_rsi(series, period=RSI_PERIOD):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-
-def calc_ema(series, period=EMA_PERIOD):
-    return series.ewm(span=period, adjust=False).mean()
-
-
-def extract_close(data, ticker):
+  for url in urls:
     try:
-        if isinstance(data.columns, pd.MultiIndex):
-            if ticker in data.columns.get_level_values(0):
-                sub = data[ticker]
-            elif ticker in data.columns.get_level_values(1):
-                sub = data.xs(ticker, level=1, axis=1)
-            else:
-                return pd.Series(dtype=float)
-            if "Close" in sub.columns:
-                return sub["Close"].dropna()
-        elif "Close" in data.columns:
-            return data["Close"].dropna()
-    except Exception as e:
-        log.debug("extract_close %s: %s", ticker, e)
-    return pd.Series(dtype=float)
+      res = requests.get(url, headers=headers, timeout=15)
+      if res.status_code == 200 and (
+          "Symbol" in res.text or "symbol" in res.text
+      ):
+        df = pd.read_csv(io.StringIO(res.text))
+        col_name = (
+            "Symbol"
+            if "Symbol" in df.columns
+            else ("SYMBOL" if "SYMBOL" in df.columns else df.columns[0])
+        )
+        tickers = [
+            f"{str(s).strip()}.NS"
+            for s in df[col_name].dropna().tolist()
+            if "NIFTY" not in str(s)
+        ]
+        if len(tickers) > 100:
+          CACHED_TICKERS = tickers
+          LAST_FETCH_DATE = today
+          return tickers
+    except Exception:
+      continue
+
+  if CACHED_TICKERS:
+    return CACHED_TICKERS
+  raise Exception("Nifty 500 list kisi bhi source से fetch nahi ho payi.")
 
 
-def compute_row(close):
-    """Close series se latest price/RSI/EMA nikalo. None agar data kam ho."""
-    if DROP_LAST_CANDLE:
-        close = close.iloc[:-1]
-    if len(close) <= MIN_CANDLES:
-        return None
-    rsi = calc_rsi(close).iloc[-1]
-    ema = calc_ema(close).iloc[-1]
-    if pd.isna(rsi) or pd.isna(ema):
-        return None
-    return {
-        "price": round(float(close.iloc[-1]), 2),
-        "rsi": round(float(rsi), 1),
-        "ema": round(float(ema), 2),
-    }
+def calculate_rsi(series, period=14):
+  delta = series.diff()
+  gain = delta.clip(lower=0)
+  loss = -1 * delta.clip(upper=0)
+  avg_gain = gain.ewm(
+      alpha=1 / period, min_periods=period, adjust=False
+  ).mean()
+  avg_loss = loss.ewm(
+      alpha=1 / period, min_periods=period, adjust=False
+  ).mean()
+  rs = avg_gain / avg_loss
+  return 100 - (100 / (1 + rs))
 
 
-# ───────────────────────── DATA CACHE ─────────────────────────
-_snap_cache = {}  # tf -> (timestamp, {symbol: row})
-_tf_locks = {tf: threading.Lock() for tf in TIMEFRAMES}
+def calculate_ema(series, period=50):
+  return series.ewm(span=period, adjust=False).mean()
 
 
-def download_batch(batch, cfg, retries=2):
-    for attempt in range(retries + 1):
-        try:
-            data = yf.download(
-                batch,
-                period=cfg["period"],
-                interval=cfg["interval"],
-                group_by="ticker",
-                progress=False,
-                threads=True,
-                auto_adjust=False,
-            )
-            if data is not None and not data.empty:
-                return data
-        except Exception as e:
-            log.warning("Download error (try %d): %s", attempt + 1, e)
-        time.sleep(2 * (attempt + 1))
-    return pd.DataFrame()
+def send_telegram_msg(text):
+  global CHAT_ID
+  if not BOT_TOKEN or not CHAT_ID:
+    return
+  url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-
-def get_snapshot(tf, max_age=CMD_CACHE_TTL):
-    """Ek timeframe ka poora Nifty500 snapshot. Cache + lock => duplicate download nahi."""
-    with _tf_locks[tf]:
-        cached = _snap_cache.get(tf)
-        if cached and time.time() - cached[0] < max_age:
-            return cached[1]
-
-        cfg = TIMEFRAMES[tf]
-        tickers = get_tickers()
-        snap = {}
-        for i in range(0, len(tickers), BATCH_SIZE):
-            batch = tickers[i : i + BATCH_SIZE]
-            data = download_batch(batch, cfg)
-            if data.empty:
-                continue
-            for t in batch:
-                row = compute_row(extract_close(data, t))
-                if row:
-                    snap[t.replace(".NS", "")] = row
-        log.info("Snapshot %s: %d symbols", tf, len(snap))
-        if snap:
-            _snap_cache[tf] = (time.time(), snap)
-        return snap
-
-
-# ───────────────────────── SCAN LOGIC ─────────────────────────
-def filter_snapshot(snap, mode):
-    m = MODES[mode]
-    rows = [{"sym": s, **r} for s, r in snap.items() if m["test"](r)]
-    rows.sort(key=lambda r: r[m["sort"]], reverse=not m["asc"])
-    return rows
-
-
-def format_rows(rows, mode):
-    col = MODES[mode]["val"]
-    return [
-        f"{r['sym']:<12}{r['price']:>9.2f}{r[col]:>9}" for r in rows
-    ]
-
-
-def table_header(mode):
-    return f"{'Symbol':<12}{'Price':>9}{MODES[mode]['col']:>9}"
-
-
-def run_command_scan(tf, mode):
-    m = MODES[mode]
-    title = f"{m['icon']} {TIMEFRAMES[tf]['label']} {m['title']}"
-    tg_send(f"⏳ <b>{html.escape(title)}</b> scan ho raha hai...")
-    snap = get_snapshot(tf, CMD_CACHE_TTL)
-    if not snap:
-        tg_send("⚠️ Data fetch nahi ho paya, thodi der baad try karo.")
-        return
-    rows = filter_snapshot(snap, mode)
-    if not rows:
-        tg_send(f"❌ <b>{html.escape(title)}</b>: koi stock match nahi hua.")
-        return
-    tg_table(
-        f"{title} ({len(rows)} stocks)", table_header(mode),
-        format_rows(rows, mode),
-    )
-
-
-def run_check(symbols):
-    for sym in symbols[:5]:
-        sym = sym.upper()
-        lines = []
-        for tf, cfg in TIMEFRAMES.items():
-            data = download_batch([f"{sym}.NS"], cfg, retries=1)
-            row = compute_row(extract_close(data, f"{sym}.NS")) if not data.empty else None
-            if row:
-                lines.append(
-                    f"{cfg['label']:<8}{row['price']:>9.2f}"
-                    f"{row['rsi']:>7}{row['ema']:>10.2f}"
-                )
-        if lines:
-            header = f"{'TF':<8}{'Price':>9}{'RSI':>7}{'EMA50':>10}"
-            tg_table(f"📊 {sym} — Status", header, lines)
-        else:
-            tg_send(f"❌ <b>{html.escape(sym)}</b>: data nahi mila ya symbol galat hai.")
-
-
-HELP_TEXT = (
-    "<b>Commands</b>\n"
-    "/rsi60_1h /rsi60_1d /rsi60_1w — RSI &gt; 60\n"
-    "/rsi30_1h /rsi30_1d /rsi30_1w — RSI ≤ 30\n"
-    "/ema50_1h /ema50_1d /ema50_1w — Price &gt; 50 EMA\n"
-    "/check SYMBOL [SYMBOL...] — ek ya zyada stocks ka status\n"
-    "/help — ye message"
-)
-
-
-def handle_command(text):
-    parts = text.split()
-    cmd = parts[0].lower().split("@")[0]
-    if cmd in ("/start", "/help"):
-        tg_send(HELP_TEXT)
-    elif cmd == "/check" and len(parts) >= 2:
-        run_check(parts[1:])
-    elif cmd in COMMAND_MAP:
-        run_command_scan(*COMMAND_MAP[cmd])
+  lines = text.split("\n")
+  chunk = []
+  curr_len = 0
+  for line in lines:
+    if curr_len + len(line) + 1 > 3800:
+      msg_part = "\n".join(chunk)
+      requests.post(
+          url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"}
+      )
+      chunk = [line]
+      curr_len = len(line)
     else:
-        tg_send("Samajh nahi aaya. /help dekho.")
+      chunk.append(line)
+      curr_len += len(line) + 1
 
-
-# ───────────────────────── COMMAND LISTENER ─────────────────────────
-def command_listener():
-    """Long polling. Sirf CHAT_ID ke messages process hote hain."""
-    offset = None
-    try:  # purane pending messages skip karo
-        r = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=15).json()
-        if r.get("result"):
-            offset = r["result"][-1]["update_id"] + 1
-    except Exception as e:
-        log.warning("Initial getUpdates failed: %s", e)
-
-    while True:
-        try:
-            params = {"timeout": 30}
-            if offset:
-                params["offset"] = offset
-            res = requests.get(f"{API}/getUpdates", params=params, timeout=40).json()
-            for item in res.get("result", []):
-                offset = item["update_id"] + 1
-                msg = item.get("message") or {}
-                if str(msg.get("chat", {}).get("id")) != CHAT_ID:
-                    continue  # anjaan user ignore
-                text = (msg.get("text") or "").strip()
-                if text.startswith("/"):
-                    try:
-                        handle_command(text)
-                    except Exception as e:
-                        log.exception("Command failed")
-                        tg_send(f"⚠️ Command error: {html.escape(str(e))}")
-        except Exception as e:
-            log.warning("Listener error: %s", e)
-            time.sleep(5)
-
-
-# ───────────────────────── AUTO SCAN ─────────────────────────
-_state_lock = threading.Lock()
-_last_higher_tf = 0.0
-
-
-def load_state():
-    try:
-        with open(STATE_FILE) as f:
-            raw = json.load(f)
-        return {tf: {m: set(v) for m, v in d.items()} for tf, d in raw.items()}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def save_state(state):
-    try:
-        with open(STATE_FILE, "w") as f:
-            json.dump({tf: {m: sorted(v) for m, v in d.items()} for tf, d in state.items()}, f)
-    except OSError as e:
-        log.warning("State save failed: %s", e)
-
-
-STATE = load_state()
-
-
-def is_market_open(now):
-    if now.weekday() >= 5:
-        return False
-    mins = now.hour * 60 + now.minute
-    return (MARKET_OPEN[0] * 60 + MARKET_OPEN[1]) <= mins <= (
-        MARKET_CLOSE[0] * 60 + MARKET_CLOSE[1]
+  if chunk:
+    msg_part = "\n".join(chunk)
+    requests.post(
+        url, json={"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"}
     )
+
+
+def extract_close_series(data, t):
+  try:
+    if isinstance(data.columns, pd.MultiIndex):
+      try:
+        if t in data.columns.get_level_values(0):
+          sub = data[t]
+          if isinstance(sub, pd.DataFrame) and "Close" in sub.columns:
+            return sub["Close"].dropna()
+      except Exception:
+        pass
+      try:
+        if t in data.columns.get_level_values(1):
+          sub = data.xs(t, level=1, axis=1)
+          if isinstance(sub, pd.DataFrame) and "Close" in sub.columns:
+            return sub["Close"].dropna()
+          elif isinstance(sub, pd.Series):
+            return sub.dropna()
+      except Exception:
+        pass
+    else:
+      if "Close" in data.columns:
+        return data["Close"].dropna()
+  except Exception:
+    pass
+  return pd.Series(dtype=float)
+
+
+def run_specific_command_scan(tickers, tf_key, mode, title):
+  try:
+    send_telegram_msg(
+        f"⏳ <b>{title}</b> ke liye scan shuru ho gaya hai, kripya 10-15 seconds"
+        " intezaar karein..."
+    )
+    cfg = TIMEFRAMES[tf_key]
+    results = []
+
+    data = yf.download(
+        tickers,
+        period=cfg["period"],
+        interval=cfg["interval"],
+        group_by="ticker",
+        progress=False,
+        threads=True,
+        auto_adjust=False,
+    )
+
+    for t in tickers:
+      try:
+        close = extract_close_series(data, t)
+        if close.empty or len(close) <= 30:
+          continue
+
+        rsi_s = calculate_rsi(close, 14)
+        ema_s = calculate_ema(close, 50)
+
+        if rsi_s.empty:
+          continue
+
+        curr_p = round(float(close.iloc[-1]), 2)
+        curr_rsi = round(float(rsi_s.iloc[-1]), 1)
+        curr_ema = round(float(ema_s.iloc[-1]), 2) if not ema_s.empty else 0
+        sym = t.replace(".NS", "")
+
+        if pd.isna(curr_rsi):
+          continue
+
+        if mode == "rsi60" and curr_rsi > 60:
+          results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
+        elif mode == "rsi30" and curr_rsi <= 30:
+          results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
+        elif mode == "ema50" and not pd.isna(curr_ema) and curr_p > curr_ema:
+          results.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_ema})
+      except Exception:
+        continue
+
+    if not results:
+      send_telegram_msg(
+          f"❌ <b>{title}:</b> Is samay criteria match karne wala koi stock"
+          " nahi mila."
+      )
+      return
+
+    if mode == "rsi30":
+      res_df = pd.DataFrame(results).sort_values(by="RSI", ascending=True)
+      lines = [
+          f"<b>{title}</b>\n<code>Symbol     | Price    |"
+          " RSI</code>\n<code>------------------------------</code>"
+      ]
+      for _, r in res_df.head(30).iterrows():
+        lines.append(
+            f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
+            f" {r['RSI']:<5}</code>"
+        )
+    elif mode == "rsi60":
+      res_df = pd.DataFrame(results).sort_values(by="RSI", ascending=False)
+      lines = [
+          f"<b>{title}</b>\n<code>Symbol     | Price    |"
+          " RSI</code>\n<code>------------------------------</code>"
+      ]
+      for _, r in res_df.head(30).iterrows():
+        lines.append(
+            f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
+            f" {r['RSI']:<5}</code>"
+        )
+    else:
+      res_df = pd.DataFrame(results).sort_values(by="Price", ascending=False)
+      lines = [
+          f"<b>{title}</b>\n<code>Symbol     | Price    | 50"
+          " EMA</code>\n<code>------------------------------</code>"
+      ]
+      for _, r in res_df.head(30).iterrows():
+        lines.append(
+            f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
+            f" ₹{r['EMA50']:<6}</code>"
+        )
+
+    send_telegram_msg("\n".join(lines))
+  except Exception as e:
+    send_telegram_msg(f"⚠️ Command error: {str(e)}")
+
+
+def process_user_commands(tickers):
+  global CHAT_ID
+  try:
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    res = requests.get(url, params={"timeout": 10}, timeout=15).json()
+    if not res.get("ok") or not res.get("result"):
+      return
+
+    now_ts = datetime.now().timestamp()
+    last_update_id = None
+
+    for item in res["result"]:
+      last_update_id = item["update_id"]
+      msg = item.get("message", {})
+      if msg.get("chat", {}).get("id"):
+        CHAT_ID = str(msg["chat"]["id"])
+      msg_date = msg.get("date", 0)
+      text = msg.get("text", "").strip()
+
+      if (now_ts - msg_date) <= 900 and text.startswith("/"):
+        parts = text.split()
+        base_cmd = parts[0].lower().split("@")[0]
+
+        if base_cmd == "/check" and len(parts) >= 2:
+          sym = parts[1].upper()
+          ticker = f"{sym}.NS"
+          reply = [
+              f"📊 <b>{sym} — Status</b>\n<code>TF   | Price  | RSI  |"
+              " EMA50</code>\n<code>-------------------------</code>"
+          ]
+          for tf_key, cfg in TIMEFRAMES.items():
+            try:
+              df = yf.download(
+                  ticker,
+                  period=cfg["period"],
+                  interval=cfg["interval"],
+                  progress=False,
+                  auto_adjust=False,
+              )
+              close = extract_close_series(df, ticker)
+              if len(close) > 30:
+                curr_p = round(float(close.iloc[-1]), 2)
+                r_val = round(float(calculate_rsi(close, 14).iloc[-1]), 1)
+                e_val = round(float(calculate_ema(close, 50).iloc[-1]), 2)
+                reply.append(
+                    f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} |"
+                    f" {e_val}</code>"
+                )
+            except Exception as tf_err:
+              continue
+
+          if len(reply) > 1:
+            send_telegram_msg("\n".join(reply))
+          else:
+            send_telegram_msg(
+                f"❌ <b>{sym}:</b> Data fetch nahi ho paya ya symbol galat hai."
+            )
+
+        elif base_cmd in COMMAND_MAP:
+          tf_key, mode, title = COMMAND_MAP[base_cmd]
+          run_specific_command_scan(tickers, tf_key, mode, title)
+
+    if last_update_id:
+      requests.get(f"{url}?offset={last_update_id + 1}", timeout=5)
+
+  except Exception as e:
+    print("Command check error:", e)
+
+
+def background_command_listener():
+  while True:
+    try:
+      tickers = get_nifty500_tickers()
+      process_user_commands(tickers)
+    except Exception as e:
+      pass
+    time.sleep(5)
 
 
 def run_smart_scan():
-    global _last_higher_tf
-    now = datetime.now(IST)
-    now_str = now.strftime("%d-%b %I:%M %p")
+  global LAST_HIGHER_TF_SCAN, PREVIOUS_SCAN_STATES
+  ist = pytz.timezone("Asia/Kolkata")
+  now = datetime.now(ist)
+  now_str = now.strftime("%d-%b %I:%M %p")
 
-    if not is_market_open(now):
-        log.info("[%s] Market band. Auto-scan paused.", now_str)
-        return
+  current_hour = now.hour
+  current_min = now.minute
+  total_mins = current_hour * 60 + current_min
 
-    first_scan = now.hour == 9 and now.minute <= 30
-    tfs = ["1h"]
-    if first_scan or time.time() - _last_higher_tf >= HIGHER_TF_INTERVAL:
-        tfs = ["1h", "1d", "1wk"]
-        _last_higher_tf = time.time()
+  is_market_active = 9 * 60 <= total_mins <= 16 * 60
+  tickers = get_nifty500_tickers()
 
-    for tf in tfs:
-        snap = get_snapshot(tf, SCAN_CACHE_TTL)
-        if not snap:
-            continue
-        label = TIMEFRAMES[tf]["label"]
+  if not is_market_active:
+    print(
+        f"[{now_str}] Market closed hours. Auto-scan paused, but commands are"
+        " active..."
+    )
+    return
 
-        for mode, m in MODES.items():
-            rows = filter_snapshot(snap, mode)
-            current = {r["sym"] for r in rows}
+  is_morning_0900_scan = current_hour == 9 and current_min <= 10
 
-            with _state_lock:
-                prev = STATE.get(tf, {}).get(mode)
-                STATE.setdefault(tf, {})[mode] = current
-                save_state(STATE)
+  timeframes_to_scan = ["1h"]
+  current_ts = time.time()
 
-            if prev is None:  # pehli baar: sirf baseline save
-                continue
-            if mode == "ema50" and first_scan:
-                continue
+  should_scan_higher_tf = is_morning_0900_scan or (
+      current_ts - LAST_HIGHER_TF_SCAN >= 1800
+  )
 
-            new_rows = [r for r in rows if r["sym"] not in prev]
-            if new_rows:
-                tg_table(
-                    f"{m['icon']} {label} — New {m['title']} ({now_str})",
-                    table_header(mode),
-                    format_rows(new_rows, mode),
-                    limit=25,
-                )
+  if should_scan_higher_tf:
+    timeframes_to_scan = ["1h", "1d", "1wk"]
+    LAST_HIGHER_TF_SCAN = current_ts
+
+  for tf_key in timeframes_to_scan:
+    cfg = TIMEFRAMES[tf_key]
+    data = yf.download(
+        tickers,
+        period=cfg["period"],
+        interval=cfg["interval"],
+        group_by="ticker",
+        progress=False,
+        threads=True,
+        auto_adjust=False,
+    )
+    bo_list, bd_list, ema_list = [], [], []
+
+    for t in tickers:
+      try:
+        close = extract_close_series(data, t)
+        if close.empty or len(close) <= 30:
+          continue
+
+        rsi = calculate_rsi(close, 14)
+        ema50 = calculate_ema(close, 50)
+
+        curr_p = round(float(close.iloc[-1]), 2)
+        curr_r = round(float(rsi.iloc[-1]), 1)
+        curr_e = round(float(ema50.iloc[-1]), 2)
+        sym = t.replace(".NS", "")
+
+        if pd.isna(curr_r):
+          continue
+
+        if curr_r > 60:
+          bo_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
+        if curr_r <= 30:
+          bd_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
+
+        if not pd.isna(curr_e) and curr_p > curr_e:
+          ema_list.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_e})
+      except Exception:
+        continue
+
+    if tf_key not in PREVIOUS_SCAN_STATES:
+      PREVIOUS_SCAN_STATES[tf_key] = {
+          "rsi60": {item["Symbol"] for item in bo_list},
+          "rsi30": {item["Symbol"] for item in bd_list},
+          "ema50": {item["Symbol"] for item in ema_list},
+      }
+      continue
+
+    prev_bo = PREVIOUS_SCAN_STATES[tf_key]["rsi60"]
+    prev_bd = PREVIOUS_SCAN_STATES[tf_key]["rsi30"]
+    prev_ema = PREVIOUS_SCAN_STATES[tf_key]["ema50"]
+
+    current_bo_set = {item["Symbol"] for item in bo_list}
+    current_bd_set = {item["Symbol"] for item in bd_list}
+    current_ema_set = {item["Symbol"] for item in ema_list}
+
+    new_bo_list = [item for item in bo_list if item["Symbol"] not in prev_bo]
+    new_bd_list = [item for item in bd_list if item["Symbol"] not in prev_bd]
+    new_ema_list = [
+        item for item in ema_list if item["Symbol"] not in prev_ema
+    ]
+
+    PREVIOUS_SCAN_STATES[tf_key]["rsi60"] = current_bo_set
+    PREVIOUS_SCAN_STATES[tf_key]["rsi30"] = current_bd_set
+    PREVIOUS_SCAN_STATES[tf_key]["ema50"] = current_ema_set
+
+    if new_bo_list:
+      bo_df = pd.DataFrame(new_bo_list).sort_values(by="RSI", ascending=False)
+      msg = [
+          f"🔥 <b>{cfg['label']} — New RSI > 60 Breakout ({now_str})</b>",
+          "<code>Symbol     | Price    | RSI</code>",
+          "<code>------------------------------</code>",
+      ]
+      for _, r in bo_df.head(25).iterrows():
+        msg.append(
+            f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
+            f" {r['RSI']:<5}</code>"
+        )
+      send_telegram_msg("\n".join(msg))
+
+    if new_bd_list:
+      bd_df = pd.DataFrame(new_bd_list).sort_values(by="RSI", ascending=True)
+      msg = [
+          f"❄️ <b>{cfg['label']} — New RSI ≤ 30 Breakdown ({now_str})</b>",
+          "<code>Symbol     | Price    | RSI</code>",
+          "<code>------------------------------</code>",
+      ]
+      for _, r in bd_df.head(25).iterrows():
+        msg.append(
+            f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
+            f" {r['RSI']:<5}</code>"
+        )
+      send_telegram_msg("\n".join(msg))
+
+    if new_ema_list and not is_morning_0900_scan:
+      ema_df = pd.DataFrame(new_ema_list).sort_values(by="Price", ascending=False)
+      msg = [
+          f"🚀 <b>{cfg['label']} — New Price > 50 EMA ({now_str})</b>",
+          "<code>Symbol     | Price    | 50 EMA</code>",
+          "<code>------------------------------</code>",
+      ]
+      for _, r in ema_df.head(25).iterrows():
+        msg.append(
+            f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
+            f" ₹{r['EMA50']:<6}</code>"
+        )
+      send_telegram_msg("\n".join(msg))
 
 
-# ───────────────────────── MAIN ─────────────────────────
 if __name__ == "__main__":
-    log.info("Bot start ho raha hai...")
-    tg_send("🤖 Bot start ho gaya. /help se commands dekho.")
+  print("Bot is running continuously with background command listener...")
+  send_telegram_msg(
+      "🤖 Bot successfully start ho gaya hai aur RSI 30 command fix kar di"
+      " gayi hai!"
+  )
 
-    threading.Thread(target=command_listener, daemon=True).start()
+  listener_thread = threading.Thread(
+      target=background_command_listener, daemon=True
+  )
+  listener_thread.start()
 
-    while True:
-        try:
-            run_smart_scan()
-        except Exception:
-            log.exception("Scan error")
-        log.info("Next scan %d min me...", SCAN_INTERVAL // 60)
-        time.sleep(SCAN_INTERVAL)
+  while True:
+    try:
+      run_smart_scan()
+    except Exception as e:
+      print("Error:", e)
+    print("Waiting 15 minutes for next scan...")
+    time.sleep(900)
+        
