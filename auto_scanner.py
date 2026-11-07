@@ -18,12 +18,13 @@ BOT_TOKEN = "7965983989:AAGtgF6o3WjuiRpADcEjDrECJqdL9O6MJls"
 CHAT_ID = "907465056"
 
 TIMEFRAMES = {
+    "15m": {"interval": "15m", "period": "5d", "label": "15 Min"},
+    "30m": {"interval": "30m", "period": "10d", "label": "30 Min"},
     "1h": {"interval": "1h", "period": "3mo", "label": "1 Hour"},
     "1d": {"interval": "1d", "period": "6mo", "label": "1 Day"},
     "1wk": {"interval": "1wk", "period": "2y", "label": "1 Week"},
 }
 
-# Yahan '<' ki jagah '≤' use kiya gaya hai taaki Telegram HTML parser error na aaye
 COMMAND_MAP = {
     "/rsi60_1h": ("1h", "rsi60", "🟢 1 Hour RSI > 60"),
     "/rsi60_1d": ("1d", "rsi60", "🟢 1 Day RSI > 60"),
@@ -34,6 +35,10 @@ COMMAND_MAP = {
     "/ema50_1h": ("1h", "ema50", "📈 1 Hour Price > 50 EMA"),
     "/ema50_1d": ("1d", "ema50", "📈 1 Day Price > 50 EMA"),
     "/ema50_1w": ("1wk", "ema50", "📈 1 Week Price > 50 EMA"),
+    # First Candle Bollinger Band Breakout Commands
+    "/bb_15m": ("15m", "bb_upper_first", "🚀 15 Min First Candle BB Breakout"),
+    "/bb_30m": ("30m", "bb_upper_first", "🚀 30 Min First Candle BB Breakout"),
+    "/bb_1h": ("1h", "bb_upper_first", "🚀 1 Hour First Candle BB Breakout"),
 }
 
 CACHED_TICKERS = []
@@ -91,7 +96,7 @@ def get_nifty500_tickers():
 
   if CACHED_TICKERS:
     return CACHED_TICKERS
-  raise Exception("Nifty 500 list kisi bhi source से fetch nahi ho payi.")
+  raise Exception("Nifty 500 list kisi bhi source se fetch nahi ho payi.")
 
 
 def calculate_rsi(series, period=14):
@@ -110,6 +115,14 @@ def calculate_rsi(series, period=14):
 
 def calculate_ema(series, period=50):
   return series.ewm(span=period, adjust=False).mean()
+
+
+def calculate_bollinger_bands(series, period=20, std_dev=2):
+  middle = series.rolling(window=period).mean()
+  std = series.rolling(window=period).std()
+  upper = middle + (std_dev * std)
+  lower = middle - (std_dev * std)
+  return upper, middle, lower
 
 
 def send_telegram_msg(text):
@@ -189,29 +202,51 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
     for t in tickers:
       try:
         close = extract_close_series(data, t)
-        if close.empty or len(close) <= 30:
+        if close.empty or len(close) <= 25:
           continue
+
+        # Check if the latest candle is today's first candle (9:15 AM IST)
+        last_time = close.index[-1]
+        if hasattr(last_time, "tz_localize") or str(last_time).endswith(
+            "+05:30"
+        ) or isinstance(last_time, pd.Timestamp):
+          # Convert to IST time if tz-aware or check time component
+          if isinstance(last_time, pd.Timestamp):
+            t_ist = last_time.tz_convert(
+                pytz.timezone("Asia/Kolkata")
+            ) if last_time.tz else last_time
+            if t_ist.hour != 9 or t_ist.minute != 15:
+              continue
 
         rsi_s = calculate_rsi(close, 14)
         ema_s = calculate_ema(close, 50)
-
-        if rsi_s.empty:
-          continue
+        upper_bb, _, _ = calculate_bollinger_bands(close, 20, 2)
 
         curr_p = round(float(close.iloc[-1]), 2)
-        curr_rsi = round(float(rsi_s.iloc[-1]), 1)
-        curr_ema = round(float(ema_s.iloc[-1]), 2) if not ema_s.empty else 0
         sym = t.replace(".NS", "")
 
-        if pd.isna(curr_rsi):
-          continue
+        if mode == "rsi60" and not rsi_s.empty:
+          curr_rsi = round(float(rsi_s.iloc[-1]), 1)
+          if not pd.isna(curr_rsi) and curr_rsi > 60:
+            results.append({"Symbol": sym, "Price": curr_p, "Val": curr_rsi})
 
-        if mode == "rsi60" and curr_rsi > 60:
-          results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
-        elif mode == "rsi30" and curr_rsi <= 30:
-          results.append({"Symbol": sym, "Price": curr_p, "RSI": curr_rsi})
-        elif mode == "ema50" and not pd.isna(curr_ema) and curr_p > curr_ema:
-          results.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_ema})
+        elif mode == "rsi30" and not rsi_s.empty:
+          curr_rsi = round(float(rsi_s.iloc[-1]), 1)
+          if not pd.isna(curr_rsi) and curr_rsi <= 30:
+            results.append({"Symbol": sym, "Price": sym, "Val": curr_rsi})
+
+        elif mode == "ema50" and not ema_s.empty:
+          curr_ema = round(float(ema_s.iloc[-1]), 2)
+          if not pd.isna(curr_ema) and curr_p > curr_ema:
+            results.append({"Symbol": sym, "Price": curr_p, "Val": curr_ema})
+
+        elif mode == "bb_upper_first" and not upper_bb.empty:
+          curr_upper = float(upper_bb.iloc[-1])
+          # First candle close above upper Bollinger Band
+          if curr_p > curr_upper:
+            results.append(
+                {"Symbol": sym, "Price": curr_p, "Val": round(curr_upper, 2)}
+            )
       except Exception:
         continue
 
@@ -222,19 +257,22 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
       )
       return
 
-    if mode == "rsi30":
-      res_df = pd.DataFrame(results).sort_values(by="RSI", ascending=True)
+    res_df = pd.DataFrame(results)
+    if mode == "bb_upper_first":
+      res_df = res_df.sort_values(by="Price", ascending=False)
       lines = [
-          f"<b>{title}</b>\n<code>Symbol     | Price    |"
-          " RSI</code>\n<code>------------------------------</code>"
+          f"<b>{title}</b>\n<code>Symbol     | Price    | Upper"
+          " BB</code>\n<code>------------------------------</code>"
       ]
       for _, r in res_df.head(30).iterrows():
         lines.append(
             f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
-            f" {r['RSI']:<5}</code>"
+            f" ₹{r['Val']:<6}</code>"
         )
-    elif mode == "rsi60":
-      res_df = pd.DataFrame(results).sort_values(by="RSI", ascending=False)
+    elif mode in ["rsi30", "rsi60"]:
+      res_df = res_df.sort_values(
+          by="Val", ascending=False if mode == "rsi60" else True
+      )
       lines = [
           f"<b>{title}</b>\n<code>Symbol     | Price    |"
           " RSI</code>\n<code>------------------------------</code>"
@@ -242,10 +280,10 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
       for _, r in res_df.head(30).iterrows():
         lines.append(
             f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
-            f" {r['RSI']:<5}</code>"
+            f" {r['Val']:<5}</code>"
         )
     else:
-      res_df = pd.DataFrame(results).sort_values(by="Price", ascending=False)
+      res_df = res_df.sort_values(by="Price", ascending=False)
       lines = [
           f"<b>{title}</b>\n<code>Symbol     | Price    | 50"
           " EMA</code>\n<code>------------------------------</code>"
@@ -253,7 +291,7 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
       for _, r in res_df.head(30).iterrows():
         lines.append(
             f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
-            f" ₹{r['EMA50']:<6}</code>"
+            f" ₹{r['Val']:<6}</code>"
         )
 
     send_telegram_msg("\n".join(lines))
@@ -292,6 +330,8 @@ def process_user_commands(tickers):
               " EMA50</code>\n<code>-------------------------</code>"
           ]
           for tf_key, cfg in TIMEFRAMES.items():
+            if tf_key in ["15m", "30m"]:
+              continue
             try:
               df = yf.download(
                   ticker,
@@ -309,7 +349,7 @@ def process_user_commands(tickers):
                     f"<code>{cfg['label']:<4} | ₹{curr_p:<5} | {r_val:<4} |"
                     f" {e_val}</code>"
                 )
-            except Exception as tf_err:
+            except Exception:
               continue
 
           if len(reply) > 1:
@@ -362,7 +402,7 @@ def run_smart_scan():
 
   is_morning_0900_scan = current_hour == 9 and current_min <= 10
 
-  timeframes_to_scan = ["1h"]
+  timeframes_to_scan = ["1h", "15m", "30m"]
   current_ts = time.time()
 
   should_scan_higher_tf = is_morning_0900_scan or (
@@ -370,7 +410,7 @@ def run_smart_scan():
   )
 
   if should_scan_higher_tf:
-    timeframes_to_scan = ["1h", "1d", "1wk"]
+    timeframes_to_scan = ["15m", "30m", "1h", "1d", "1wk"]
     LAST_HIGHER_TF_SCAN = current_ts
 
   for tf_key in timeframes_to_scan:
@@ -384,32 +424,49 @@ def run_smart_scan():
         threads=True,
         auto_adjust=False,
     )
-    bo_list, bd_list, ema_list = [], [], []
+    bo_list, bd_list, ema_list, bb_first_list = [], [], [], []
 
     for t in tickers:
       try:
         close = extract_close_series(data, t)
-        if close.empty or len(close) <= 30:
+        if close.empty or len(close) <= 25:
           continue
+
+        # Check if the latest candle is first candle (9:15 AM)
+        last_time = close.index[-1]
+        if isinstance(last_time, pd.Timestamp):
+          t_ist = last_time.tz_convert(
+              pytz.timezone("Asia/Kolkata")
+          ) if last_time.tz else last_time
+          if t_ist.hour != 9 or t_ist.minute != 15:
+            continue
 
         rsi = calculate_rsi(close, 14)
         ema50 = calculate_ema(close, 50)
+        upper_bb, _, _ = calculate_bollinger_bands(close, 20, 2)
 
         curr_p = round(float(close.iloc[-1]), 2)
-        curr_r = round(float(rsi.iloc[-1]), 1)
-        curr_e = round(float(ema50.iloc[-1]), 2)
         sym = t.replace(".NS", "")
 
-        if pd.isna(curr_r):
-          continue
+        if not rsi.empty:
+          curr_r = round(float(rsi.iloc[-1]), 1)
+          if not pd.isna(curr_r):
+            if curr_r > 60:
+              bo_list.append({"Symbol": sym, "Price": curr_p, "Val": curr_r})
+            if curr_r <= 30:
+              bd_list.append({"Symbol": sym, "Price": curr_p, "Val": curr_r})
 
-        if curr_r > 60:
-          bo_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
-        if curr_r <= 30:
-          bd_list.append({"Symbol": sym, "Price": curr_p, "RSI": curr_r})
+        if not ema50.empty:
+          curr_e = round(float(ema50.iloc[-1]), 2)
+          if not pd.isna(curr_e) and curr_p > curr_e:
+            ema_list.append({"Symbol": sym, "Price": curr_p, "Val": curr_e})
 
-        if not pd.isna(curr_e) and curr_p > curr_e:
-          ema_list.append({"Symbol": sym, "Price": curr_p, "EMA50": curr_e})
+        if not upper_bb.empty:
+          curr_upper = float(upper_bb.iloc[-1])
+          if curr_p > curr_upper:
+            bb_first_list.append(
+                {"Symbol": sym, "Price": curr_p, "Val": round(curr_upper, 2)}
+            )
       except Exception:
         continue
 
@@ -418,29 +475,36 @@ def run_smart_scan():
           "rsi60": {item["Symbol"] for item in bo_list},
           "rsi30": {item["Symbol"] for item in bd_list},
           "ema50": {item["Symbol"] for item in ema_list},
+          "bb_upper_first": {item["Symbol"] for item in bb_first_list},
       }
       continue
 
     prev_bo = PREVIOUS_SCAN_STATES[tf_key]["rsi60"]
     prev_bd = PREVIOUS_SCAN_STATES[tf_key]["rsi30"]
     prev_ema = PREVIOUS_SCAN_STATES[tf_key]["ema50"]
+    prev_bb_first = PREVIOUS_SCAN_STATES[tf_key]["bb_upper_first"]
 
     current_bo_set = {item["Symbol"] for item in bo_list}
     current_bd_set = {item["Symbol"] for item in bd_list}
     current_ema_set = {item["Symbol"] for item in ema_list}
+    current_bb_first_set = {item["Symbol"] for item in bb_first_list}
 
     new_bo_list = [item for item in bo_list if item["Symbol"] not in prev_bo]
     new_bd_list = [item for item in bd_list if item["Symbol"] not in prev_bd]
     new_ema_list = [
         item for item in ema_list if item["Symbol"] not in prev_ema
     ]
+    new_bb_first_list = [
+        item for item in bb_first_list if item["Symbol"] not in prev_bb_first
+    ]
 
     PREVIOUS_SCAN_STATES[tf_key]["rsi60"] = current_bo_set
     PREVIOUS_SCAN_STATES[tf_key]["rsi30"] = current_bd_set
     PREVIOUS_SCAN_STATES[tf_key]["ema50"] = current_ema_set
+    PREVIOUS_SCAN_STATES[tf_key]["bb_upper_first"] = current_bb_first_set
 
     if new_bo_list:
-      bo_df = pd.DataFrame(new_bo_list).sort_values(by="RSI", ascending=False)
+      bo_df = pd.DataFrame(new_bo_list).sort_values(by="Val", ascending=False)
       msg = [
           f"🔥 <b>{cfg['label']} — New RSI > 60 Breakout ({now_str})</b>",
           "<code>Symbol     | Price    | RSI</code>",
@@ -449,12 +513,12 @@ def run_smart_scan():
       for _, r in bo_df.head(25).iterrows():
         msg.append(
             f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
-            f" {r['RSI']:<5}</code>"
+            f" {r['Val']:<5}</code>"
         )
       send_telegram_msg("\n".join(msg))
 
     if new_bd_list:
-      bd_df = pd.DataFrame(new_bd_list).sort_values(by="RSI", ascending=True)
+      bd_df = pd.DataFrame(new_bd_list).sort_values(by="Val", ascending=True)
       msg = [
           f"❄️ <b>{cfg['label']} — New RSI ≤ 30 Breakdown ({now_str})</b>",
           "<code>Symbol     | Price    | RSI</code>",
@@ -463,11 +527,30 @@ def run_smart_scan():
       for _, r in bd_df.head(25).iterrows():
         msg.append(
             f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
-            f" {r['RSI']:<5}</code>"
+            f" {r['Val']:<5}</code>"
         )
       send_telegram_msg("\n".join(msg))
 
-    if new_ema_list and not is_morning_0900_scan:
+    if new_bb_first_list:
+      bb_df = pd.DataFrame(new_bb_first_list).sort_values(
+          by="Price", ascending=False
+      )
+      msg = [
+          (
+              f"🚀 <b>{cfg['label']} — First Candle BB Upper Breakout"
+              f" ({now_str})</b>"
+          ),
+          "<code>Symbol     | Price    | Upper BB</code>",
+          "<code>------------------------------</code>",
+      ]
+      for _, r in bb_df.head(25).iterrows():
+        msg.append(
+            f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
+            f" ₹{r['Val']:<6}</code>"
+        )
+      send_telegram_msg("\n".join(msg))
+
+    if new_ema_list and not is_morning_0900_scan and tf_key not in ["15m", "30m"]:
       ema_df = pd.DataFrame(new_ema_list).sort_values(by="Price", ascending=False)
       msg = [
           f"🚀 <b>{cfg['label']} — New Price > 50 EMA ({now_str})</b>",
@@ -477,16 +560,18 @@ def run_smart_scan():
       for _, r in ema_df.head(25).iterrows():
         msg.append(
             f"<code>{r['Symbol']:<10} | ₹{r['Price']:<7} |"
-            f" ₹{r['EMA50']:<6}</code>"
+            f" ₹{r['Val']:<6}</code>"
         )
       send_telegram_msg("\n".join(msg))
 
 
 if __name__ == "__main__":
-  print("Bot is running continuously with background command listener...")
+  print(
+      "Bot is running continuously with First Candle Bollinger Band filters..."
+  )
   send_telegram_msg(
-      "🤖 Bot successfully start ho gaya hai aur RSI 30 command fix kar di"
-      " gayi hai!"
+      "🤖 Bot start ho gaya hai! 15m, 30m aur 1h ke liye sirf 'First Candle' BB"
+      " Breakout filter active hai."
   )
 
   listener_thread = threading.Thread(
@@ -501,4 +586,4 @@ if __name__ == "__main__":
       print("Error:", e)
     print("Waiting 15 minutes for next scan...")
     time.sleep(900)
-        
+    
