@@ -205,44 +205,46 @@ def run_specific_command_scan(tickers, tf_key, mode, title):
         if close.empty or len(close) <= 25:
           continue
 
-        # Check if the latest candle is today's first candle (9:15 AM IST)
+        # Get today's date or the latest available date's first candle
         last_time = close.index[-1]
-        if hasattr(last_time, "tz_localize") or str(last_time).endswith(
-            "+05:30"
-        ) or isinstance(last_time, pd.Timestamp):
-          # Convert to IST time if tz-aware or check time component
-          if isinstance(last_time, pd.Timestamp):
-            t_ist = last_time.tz_convert(
-                pytz.timezone("Asia/Kolkata")
-            ) if last_time.tz else last_time
-            if t_ist.hour != 9 or t_ist.minute != 15:
-              continue
+        first_idx = 0
+        if isinstance(last_time, pd.Timestamp):
+          # Find the index of the first candle of the latest date present in data
+          latest_date = last_time.date()
+          day_candles = [
+              i
+              for i, idx in enumerate(close.index)
+              if isinstance(idx, pd.Timestamp) and idx.date() == latest_date
+          ]
+          if day_candles:
+            first_idx = day_candles[
+                0
+            ]  # Din ki sabhi se pehli candle ka index
 
         rsi_s = calculate_rsi(close, 14)
         ema_s = calculate_ema(close, 50)
         upper_bb, _, _ = calculate_bollinger_bands(close, 20, 2)
 
-        curr_p = round(float(close.iloc[-1]), 2)
+        curr_p = round(float(close.iloc[first_idx]), 2)
         sym = t.replace(".NS", "")
 
         if mode == "rsi60" and not rsi_s.empty:
-          curr_rsi = round(float(rsi_s.iloc[-1]), 1)
+          curr_rsi = round(float(rsi_s.iloc[first_idx]), 1)
           if not pd.isna(curr_rsi) and curr_rsi > 60:
             results.append({"Symbol": sym, "Price": curr_p, "Val": curr_rsi})
 
         elif mode == "rsi30" and not rsi_s.empty:
-          curr_rsi = round(float(rsi_s.iloc[-1]), 1)
+          curr_rsi = round(float(rsi_s.iloc[first_idx]), 1)
           if not pd.isna(curr_rsi) and curr_rsi <= 30:
-            results.append({"Symbol": sym, "Price": sym, "Val": curr_rsi})
+            results.append({"Symbol": sym, "Price": curr_p, "Val": curr_rsi})
 
         elif mode == "ema50" and not ema_s.empty:
-          curr_ema = round(float(ema_s.iloc[-1]), 2)
+          curr_ema = round(float(ema_s.iloc[first_idx]), 2)
           if not pd.isna(curr_ema) and curr_p > curr_ema:
             results.append({"Symbol": sym, "Price": curr_p, "Val": curr_ema})
 
         elif mode == "bb_upper_first" and not upper_bb.empty:
-          curr_upper = float(upper_bb.iloc[-1])
-          # First candle close above upper Bollinger Band
+          curr_upper = float(upper_bb.iloc[first_idx])
           if curr_p > curr_upper:
             results.append(
                 {"Symbol": sym, "Price": curr_p, "Val": round(curr_upper, 2)}
@@ -432,24 +434,27 @@ def run_smart_scan():
         if close.empty or len(close) <= 25:
           continue
 
-        # Check if the latest candle is first candle (9:15 AM)
         last_time = close.index[-1]
+        first_idx = 0
         if isinstance(last_time, pd.Timestamp):
-          t_ist = last_time.tz_convert(
-              pytz.timezone("Asia/Kolkata")
-          ) if last_time.tz else last_time
-          if t_ist.hour != 9 or t_ist.minute != 15:
-            continue
+          latest_date = last_time.date()
+          day_candles = [
+              i
+              for i, idx in enumerate(close.index)
+              if isinstance(idx, pd.Timestamp) and idx.date() == latest_date
+          ]
+          if day_candles:
+            first_idx = day_candles[0]
 
         rsi = calculate_rsi(close, 14)
         ema50 = calculate_ema(close, 50)
         upper_bb, _, _ = calculate_bollinger_bands(close, 20, 2)
 
-        curr_p = round(float(close.iloc[-1]), 2)
+        curr_p = round(float(close.iloc[first_idx]), 2)
         sym = t.replace(".NS", "")
 
         if not rsi.empty:
-          curr_r = round(float(rsi.iloc[-1]), 1)
+          curr_r = round(float(rsi.iloc[first_idx]), 1)
           if not pd.isna(curr_r):
             if curr_r > 60:
               bo_list.append({"Symbol": sym, "Price": curr_p, "Val": curr_r})
@@ -457,12 +462,12 @@ def run_smart_scan():
               bd_list.append({"Symbol": sym, "Price": curr_p, "Val": curr_r})
 
         if not ema50.empty:
-          curr_e = round(float(ema50.iloc[-1]), 2)
+          curr_e = round(float(ema50.iloc[first_idx]), 2)
           if not pd.isna(curr_e) and curr_p > curr_e:
             ema_list.append({"Symbol": sym, "Price": curr_p, "Val": curr_e})
 
         if not upper_bb.empty:
-          curr_upper = float(upper_bb.iloc[-1])
+          curr_upper = float(upper_bb.iloc[first_idx])
           if curr_p > curr_upper:
             bb_first_list.append(
                 {"Symbol": sym, "Price": curr_p, "Val": round(curr_upper, 2)}
@@ -566,12 +571,10 @@ def run_smart_scan():
 
 
 if __name__ == "__main__":
-  print(
-      "Bot is running continuously with First Candle Bollinger Band filters..."
-  )
+  print("Bot is running with Flexible First Candle BB filters...")
   send_telegram_msg(
-      "🤖 Bot start ho gaya hai! 15m, 30m aur 1h ke liye sirf 'First Candle' BB"
-      " Breakout filter active hai."
+      "🤖 Bot start ho gaya hai! Ab market closed ho ya live, First Candle BB"
+      " Breakout command proper result degi."
   )
 
   listener_thread = threading.Thread(
@@ -586,4 +589,4 @@ if __name__ == "__main__":
       print("Error:", e)
     print("Waiting 15 minutes for next scan...")
     time.sleep(900)
-    
+              
